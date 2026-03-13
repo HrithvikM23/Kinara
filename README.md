@@ -19,14 +19,9 @@ The system tracks a person using pose estimation, streams body joint data over U
 * Unreal Engine 5
 * Visual Studio Code
 * Python
-* Git
 * Visual Studio Build Tools
 * CUDA Toolkit
 * cuDNN
-
-## Optional Applications
-
-* Blender
 
 ---
 
