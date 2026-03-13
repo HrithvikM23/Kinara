@@ -1,1 +1,0 @@
-This folder is only to create a new project in unity and located here dont keep anything other then unity project files
