@@ -1,20 +1,2 @@
 # ---------- Always ignore ----------
-HMT3A_Blender/outputs/
-HMT3A_Unity/exports/
-HMT3A_Unity/mediapipe_server/__pycache__/
-.vscode/
-# ---------- Handle unity_client ----------
-# Ignore everything in unity_client
-HMT3A_Unity/unity_client/*
-
-# Keep the folder structure
-!HMT3A_Unity/unity_client/
-!HMT3A_Unity/unity_client/readme.txt
-!HMT3A_Unity/unity_client/Mediapipe_Unity_Client/
-
-# Ignore everything in the project except Assets/Scripts
-HMT3A_Unity/unity_client/Mediapipe_Unity_Client/*
-!HMT3A_Unity/unity_client/Mediapipe_Unity_Client/Assets/
-HMT3A_Unity/unity_client/Mediapipe_Unity_Client/Assets/*
-!HMT3A_Unity/unity_client/Mediapipe_Unity_Client/Assets/Scripts/
-!HMT3A_Unity/unity_client/Mediapipe_Unity_Client/Assets/Scripts/**
+HMT3A_Blender/
