@@ -1,69 +1,169 @@
-Human Motion to Animation Pipeline
+# Human Motion to Animation Pipeline
 
-This repository contains a hybrid Blender + Unity + MediaPipe workflow that converts human motion (from webcam or video) into 3D character animation.
+A **real-time human motion capture pipeline** that converts human movement from a webcam or video into **3D character animation inside Unreal Engine 5**.
 
-The system tracks a person using MediaPipe Holistic, streams body landmarks to Unity in real time, maps them onto a humanoid rig, and optionally exports usable keyframe animation for further use in Unity or Blender.
+The system tracks a person using pose estimation, streams body joint data over UDP, maps it to a humanoid skeleton, and drives a real-time character animation system.
 
-Project Goal
+---
 
-To create an end-to-end motion capture pipeline that:
-Tracks full-body movement from a camera or pre-recorded video
-Streams motion data to Unity in real time
-Drives a humanoid character using the tracked data
-Records and exports animation as keyframes
-Allows further cleanup and rendering inside Blender
+# Requirements
 
+## Hardware
+
+* NVIDIA GPU (recommended)
+* Webcam or camera device
+* Minimum 16GB RAM recommended
+
+## Required Applications
+
+* Unreal Engine 5
+* Visual Studio Code
+* Python
+* Git
+* Visual Studio Build Tools
+* CUDA Toolkit
+* cuDNN
+
+## Optional Applications
+
+* Blender
+
+---
+
+# Project Goal
+
+Create a full motion-capture pipeline capable of:
+
+* Tracking **human body motion from a camera or video**
+* Detecting **multi-person pose data**
+* Streaming pose information to Unreal Engine in real time
+* Mapping joints to a **humanoid animation skeleton**
+* Driving characters such as **MetaHumans**
+* Recording motion as reusable animation data
+* Exporting animation for further editing or cinematic use
+
+---
+
+# System Architecture
+
+```
 Camera / Video
        ↓
-MediaPipe Holistic (Python)
-       ↓   UDP stream (port 5052)
-Unity Receiver (C#)
+Pose Detection (OpenPose / AI Pose Model)
        ↓
-Humanoid Character Mapping
+Joint Coordinates
        ↓
-Real-time Preview
+Skeleton Construction
        ↓
-Record Motion → .anim file
+Angle Calculation
        ↓
-(Optional) Export to Blender for polishing
+UDP Streaming
+       ↓
+Unreal Engine Receiver
+       ↓
+Humanoid Skeleton Mapping
+       ↓
+Real-time Character Animation
+```
 
-How to Run (Basic)
-Step 1 — Start Unity
+---
 
-Open Mediapipe_Unity_Client in Unity
+# Pipeline Overview
 
-Press Play
+### Motion Capture
 
-Step 2 — Run MediaPipe
+Human motion is captured using a webcam or video input.
 
-In VS Code:
-cd HMT3A_Unity/mediapipe_server
+### Pose Detection
+
+The AI pose system extracts body joints such as:
+
+* shoulders
+* elbows
+* wrists
+* hips
+* knees
+* ankles
+
+### Pose Processing
+
+Joint coordinates are converted into animation-ready bone rotations.
+
+### Data Streaming
+
+Pose data is transmitted via **UDP** to the Unreal Engine application.
+
+### Unreal Animation System
+
+The Unreal receiver interprets incoming pose data and applies it to a humanoid skeleton.
+
+---
+
+# How to Run (Current Workflow)
+
+## Step 1 — Launch Unreal Engine
+
+1. Open the Unreal project
+2. Start the scene containing the animation receiver
+3. Run the project to begin listening for pose data
+
+## Step 2 — Start the Pose Server
+
+From the project directory:
+
+```
+cd pose_server
 python main.py
-Choose:
+```
 
+Select input source:
+
+```
 1 → Webcam
-
 2 → Video file
+```
 
-If everything is correct, your Unity character will respond to your movement.
+The server will begin tracking motion and streaming pose data.
 
-Current Status
-✅ MediaPipe tracking working
-✅ UDP streaming to Unity working
-🔄 Character mapping in progress
-⏳ Animation recording system pending
-⏳ Blender cleanup pipeline pending
+---
 
-Future Work
-Planned improvements:
-Full-body bone mapping
-Inverse Kinematics (IK) in Unity
-One-click animation recording
-Automatic export to FBX
-Better smoothing and filtering
-Blender automation scripts
+# Current Development Status
 
-Tech Stack
-Python: MediaPipe, OpenCV, NumPy
-Unity: C#, Animation Rigging
-Blender: FBX import/export, animation cleanup
+| Component                   | Status         |
+| --------------------------- | -------------- |
+| Pose detection pipeline     | In development |
+| Multi-person tracking       | Planned        |
+| UDP streaming system        | Designed       |
+| Unreal data receiver        | Planned        |
+| Character skeleton mapping  | Planned        |
+| Real-time animation preview | Planned        |
+| Animation recording system  | Planned        |
+
+---
+
+# Planned Features
+
+* Full humanoid bone mapping
+* Multi-person tracking
+* Real-time smoothing and filtering
+* Inverse Kinematics support
+* Animation recording and playback
+* FBX export pipeline
+* MetaHuman animation support
+
+---
+
+# Technology Stack
+
+**Computer Vision**
+
+* Python
+* OpenPose
+* OpenCV
+* NumPy
+
+**Game Engine**
+
+* Unreal Engine 5
+* C++ / Blueprint Animation System
+
