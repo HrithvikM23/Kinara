@@ -1,2 +1,21 @@
 # ---------- Always ignore ----------
 HMT3A_Blender/outputs/
+output/*
+
+# ---------- Python cache ----------
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ---------- Python compiled ----------
+*.pyc.*
+*.py,cover
+
+# ---------- Virtual environments ----------
+venv/
+.env/
+
+# ---------- Python cache folders ----------
+.mypy_cache/
+.pytest_cache/
