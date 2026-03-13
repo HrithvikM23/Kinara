@@ -16,12 +16,13 @@ The system tracks a person using pose estimation, streams body joint data over U
 
 ## Required Applications
 
-* Unreal Engine 5
+* Unreal Engine 5.4
 * Visual Studio Code
-* Python
+* Python 3.9/3.10
 * Visual Studio Build Tools
-* CUDA Toolkit
-* cuDNN
+* CUDA Toolkit 12.4
+* cuDNN 9.x
+* Cmake 3.26
 
 ---
 
