@@ -14,3 +14,4 @@ venv/
 # ---------- Tool caches ----------
 .mypy_cache/
 .pytest_cache/
+
