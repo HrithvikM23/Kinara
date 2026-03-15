@@ -21,8 +21,8 @@ The system tracks a person using OpenPose pose estimation, extracts BODY_25 keyp
 | Unreal Engine | 5.4 | Target animation runtime |
 | Python | 3.11.9 | Pipeline scripting |
 | Visual Studio | 2025 Community (v18) | Required to build OpenPose |
-| CUDA Toolkit | 12.4 | GPU acceleration |
-| cuDNN | 9.x | Deep learning backend |
+| CUDA Toolkit | 13.4 | GPU acceleration |
+| cuDNN | 9.2 | Deep learning backend |
 | CMake | 4.x | Build system |
 | OpenPose | Latest (CMU) | Pose estimation engine |
 
@@ -42,38 +42,21 @@ Follow these steps in order. Each step must complete successfully before moving 
 4. When prompted for workloads, check **"Desktop development with C++"**
 5. Click **Install**
 
-Verify:
-```cmd
-dir "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC"
-```
-You should see a version folder like `14.50.xxxxx`.
-
 ---
 
-## 2. Install CUDA Toolkit 12.4
+## 2. Install CUDA Toolkit 13.4
 
-1. Go to https://developer.nvidia.com/cuda-12-4-0-download-archive
+1. Go to [Nvidia Cuda](https://developer.nvidia.com/cuda-downloads)
 2. Select: Windows → x86_64 → your Windows version → exe (local)
 3. Download and run the installer
 4. Use **Express** install
 
-Verify:
-```cmd
-nvcc --version
-```
-Should show `release 12.4`.
-
 ---
 
-## 3. Install cuDNN 9.x
+## 3. Install cuDNN 9.2
 
-1. Go to https://developer.nvidia.com/cudnn (requires free NVIDIA account)
-2. Download **cuDNN 9.x for CUDA 12.x** — Windows zip
-3. Extract the zip
-4. Copy the contents into your CUDA install folder:
-   - `bin\` → `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin\`
-   - `include\` → `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\include\`
-   - `lib\` → `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\lib\`
+1. Go to [Nvidia cuDNN](https://developer.nvidia.com/cudnn) (requires free NVIDIA account)
+2. Download **cuDNN 9.2 for CUDA 13.2** — Windows exe
 
 ---
 
@@ -84,11 +67,6 @@ Should show `release 12.4`.
 3. Run the installer
 4. When asked about PATH, select **"Add CMake to the system PATH for all users"**
 
-Verify:
-```cmd
-cmake --version
-```
-Should show `4.x.x`.
 
 ---
 
@@ -98,12 +76,6 @@ Should show `4.x.x`.
 2. Download **Windows installer (64-bit)**
 3. Run installer
 4. Check **"Add Python to PATH"** at the bottom before clicking Install
-
-Verify:
-```cmd
-python --version
-```
-Should show `Python 3.11.9`.
 
 Install required Python packages:
 ```cmd
