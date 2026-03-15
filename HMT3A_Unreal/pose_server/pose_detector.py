@@ -1,60 +1,99 @@
-from config import OPENPOSE_BIN_PATH, OPENPOSE_MODELS_PATH, POSE_MODEL, LOGGING_LEVEL
+import cv2
+import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python.vision import PoseLandmarker, PoseLandmarkerOptions, RunningMode
+import urllib.request
+import os
+import config
 
-import pyopenpose as op
+
+MODEL_PATH = "pose_landmarker_full.task"
+MODEL_URL  = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task"
+
+POSE_CONNECTIONS = [
+    (11, 12), (11, 13), (13, 15), (12, 14), (14, 16),
+    (11, 23), (12, 24), (23, 24), (23, 25), (24, 26),
+    (25, 27), (26, 28), (27, 29), (28, 30), (29, 31),
+    (30, 32), (27, 31), (28, 32)
+]
+
+PERSON_COLORS = [
+    (0, 255, 0),
+    (255, 0, 0),
+    (0, 0, 255),
+    (255, 255, 0),
+    (0, 255, 255),
+]
 
 
-def compute_net_resolution(frame, base=16, target_short_side=368):
-    """
-    Computes a net_resolution string that:
-    - Preserves the video's aspect ratio
-    - Keeps the short side close to target_short_side
-    - Rounds both dimensions to the nearest multiple of base (required by OpenPose)
-    """
+def download_model():
+    if not os.path.exists(MODEL_PATH):
+        print("Downloading MediaPipe pose model...")
+        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+        print("Model downloaded.")
+
+
+def draw_landmarks(frame, landmarks, color):
     h, w = frame.shape[:2]
 
-    if h < w:
-        scale = target_short_side / h
-    else:
-        scale = target_short_side / w
+    for lm in landmarks:
+        cx = int(lm.x * w)
+        cy = int(lm.y * h)
+        cv2.circle(frame, (cx, cy), 4, color, -1)
 
-    new_w = round((w * scale) / base) * base
-    new_h = round((h * scale) / base) * base
+    for a, b in POSE_CONNECTIONS:
+        ax = int(landmarks[a].x * w)
+        ay = int(landmarks[a].y * h)
+        bx = int(landmarks[b].x * w)
+        by = int(landmarks[b].y * h)
+        cv2.line(frame, (ax, ay), (bx, by), color, 2)
 
-    return f"{new_w}x{new_h}"
+    return frame
 
 
 class PoseDetector:
 
-    def __init__(self, first_frame):
-        resolution = compute_net_resolution(first_frame)
-        print(f"Net resolution set to: {resolution}")
+    def __init__(self):
+        download_model()
 
-        params = {
-            "model_folder":   OPENPOSE_MODELS_PATH,
-            "model_pose":     POSE_MODEL,
-            "net_resolution": resolution,
-            "logging_level":  LOGGING_LEVEL,
-        }
+        options = PoseLandmarkerOptions(
+            base_options                  = python.BaseOptions(model_asset_path=MODEL_PATH),
+            running_mode                  = RunningMode.VIDEO,
+            num_poses                     = config.MAX_PERSONS,
+            min_pose_detection_confidence = config.MIN_DETECTION_CONFIDENCE,
+            min_pose_presence_confidence  = config.MIN_DETECTION_CONFIDENCE,
+            min_tracking_confidence       = config.MIN_TRACKING_CONFIDENCE,
+            output_segmentation_masks     = False,
+        )
 
-        self.wrapper = op.WrapperPython()
-        self.wrapper.configure(params)
-        self.wrapper.start()
-        print("PoseDetector ready.")
+        self.landmarker  = PoseLandmarker.create_from_options(options)
+        self.frame_index = 0
+        print(f"PoseDetector ready — tracking up to {config.MAX_PERSONS} people.")
 
     def detect(self, frame):
         """
         Input:  BGR numpy frame
-        Output: (keypoints, rendered_frame)
-                keypoints → numpy array shape (25, 3) [x, y, confidence]
-                            or None if no person detected
+        Output: (people, rendered_frame)
+                people → list of lists, each inner list is 33 world landmarks
+                          empty list if no one detected
         """
-        datum = op.Datum()
-        datum.cvInputData = frame
-        self.wrapper.emplaceAndPop(op.VectorDatum([datum]))
+        rgb      = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        ts       = int(self.frame_index * (1000 / 30))
 
-        kp = datum.poseKeypoints
+        result = self.landmarker.detect_for_video(mp_image, ts)
 
-        if kp is None or kp.shape[0] == 0:
-            return None, datum.cvOutputData
+        self.frame_index += 1
 
-        return kp[0], datum.cvOutputData
+        if not result.pose_world_landmarks:
+            return [], frame
+
+        if result.pose_landmarks:
+            for i, person_landmarks in enumerate(result.pose_landmarks):
+                color = PERSON_COLORS[i % len(PERSON_COLORS)]
+                draw_landmarks(frame, person_landmarks, color)
+
+        return result.pose_world_landmarks, frame
+
+    def close(self):
+        self.landmarker.close()
