@@ -1,6 +1,7 @@
 # ---------- Outputs ----------
-**/output/
-HMT3A_Blender/outputs/
+**/outputs/
+*.mp4
+*.json
 
 # ---------- Python cache ----------
 **/__pycache__/
@@ -15,3 +16,5 @@ venv/
 .mypy_cache/
 .pytest_cache/
 
+# ---------- Logs ---------- 
+*.task 
