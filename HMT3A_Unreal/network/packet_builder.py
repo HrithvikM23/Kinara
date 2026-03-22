@@ -1,62 +1,79 @@
+﻿from __future__ import annotations
+
 import json
 
-# Landmarks 11-32 from the original Blazepose set
-BODY_LANDMARKS = [
-    "left_shoulder", "right_shoulder", "left_elbow", "right_elbow",
-    "left_wrist", "right_wrist", "left_pinky", "right_pinky",
-    "left_index", "right_index", "left_thumb", "right_thumb",
-    "left_hip", "right_hip", "left_knee", "right_knee",
-    "left_ankle", "right_ankle", "left_heel", "right_heel",
-    "left_foot_index", "right_foot_index"
-]
+from config import BODY_LANDMARKS, HAND_LANDMARKS
+from process.angle_calculator import build_joint_angles
+from process.skeleton_builder import build_bone_vectors
 
-# Standard 21 Hand Landmarks
-HAND_LANDMARKS = [
-    "wrist", "thumb_cmc", "thumb_mcp", "thumb_ip", "thumb_tip",
-    "index_finger_mcp", "index_finger_pip", "index_finger_dip", "index_finger_tip",
-    "middle_finger_mcp", "middle_finger_pip", "middle_finger_dip", "middle_finger_tip",
-    "ring_finger_mcp", "ring_finger_pip", "ring_finger_dip", "ring_finger_tip",
-    "pinky_mcp", "pinky_pip", "pinky_dip", "pinky_tip"
-]
 
-def build_packet(people: list, frame_index: int) -> bytes:
-    persons = []
+def _round_optional(value):
+    if value is None:
+        return None
+    return round(float(value), 6)
 
-    for person_landmarks in people:
-        joints = {}
-        num_landmarks = len(person_landmarks)
 
-        # 1. Map Body Joints (Indices 0-21 in the filtered list)
-        for i in range(min(num_landmarks, 22)):
-            name = BODY_LANDMARKS[i]
-            lm = person_landmarks[i]
-            joints[name] = {
-                "x": round(lm.x, 6),
-                "y": round(lm.y, 6),
-                "z": round(lm.z, 6),
-                "visibility": getattr(lm, 'visibility', 1.0) # Hands don't always have visibility
+def _serialize_joint(joint):
+    if joint is None:
+        return None
+
+    payload = {
+        "x": round(float(joint["x"]), 6),
+        "y": round(float(joint["y"]), 6),
+        "z": round(float(joint["z"]), 6),
+    }
+
+    if "visibility" in joint:
+        payload["visibility"] = round(float(joint["visibility"]), 6)
+
+    return payload
+
+
+def _serialize_joint_map(joints, ordered_names):
+    joints = joints or {}
+    return {name: _serialize_joint(joints.get(name)) for name in ordered_names}
+
+
+def _present(section_map) -> bool:
+    return any(value is not None for value in section_map.values())
+
+
+def build_packet(persons: list, frame_index: int, timestamp_ms: int, source_fps: float) -> bytes:
+    serialized_people = []
+
+    for person in persons:
+        body_joints = _serialize_joint_map(person.get("body"), BODY_LANDMARKS)
+        left_hand_joints = _serialize_joint_map(person.get("left_hand"), HAND_LANDMARKS)
+        right_hand_joints = _serialize_joint_map(person.get("right_hand"), HAND_LANDMARKS)
+
+        serialized_people.append(
+            {
+                "id": int(person.get("id", len(serialized_people))),
+                "body": {
+                    "present": _present(body_joints),
+                    "joints": body_joints,
+                },
+                "left_hand": {
+                    "present": _present(left_hand_joints),
+                    "confidence": _round_optional(person.get("left_hand_confidence")),
+                    "joints": left_hand_joints,
+                },
+                "right_hand": {
+                    "present": _present(right_hand_joints),
+                    "confidence": _round_optional(person.get("right_hand_confidence")),
+                    "joints": right_hand_joints,
+                },
+                "bones": build_bone_vectors(person.get("body", {})),
+                "angles": build_joint_angles(person.get("body", {})),
             }
-
-        # 2. Map Hand Joints (Indices 22+ if they exist)
-        if num_landmarks > 22:
-            hand_data = person_landmarks[22:]
-            # We label them as hand_0_wrist, hand_1_wrist, etc.
-            for j, lm in enumerate(hand_data):
-                hand_idx = j // 21
-                joint_idx = j % 21
-                name = f"hand_{hand_idx}_{HAND_LANDMARKS[joint_idx]}"
-                joints[name] = {
-                    "x": round(lm.x, 6),
-                    "y": round(lm.y, 6),
-                    "z": round(lm.z, 6)
-                }
-
-        persons.append(joints)
+        )
 
     packet = {
         "frame": frame_index,
-        "count": len(persons),
-        "persons": persons,
+        "timestamp_ms": int(timestamp_ms),
+        "source_fps": round(float(source_fps), 3),
+        "count": len(serialized_people),
+        "persons": serialized_people,
     }
 
-    return json.dumps(packet).encode("utf-8")
+    return json.dumps(packet, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
