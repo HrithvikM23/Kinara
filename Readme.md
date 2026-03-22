@@ -21,8 +21,7 @@ The system now tracks **body + hands simultaneously**, streams joint data over U
 | Unreal Engine | 5.4     | Target animation runtime |
 | Python        | 3.11.9  | Pipeline scripting       |
 | CUDA Toolkit  | 13.2    | GPU acceleration         |
-| cuDNN         | 9.x     | Deep learning backend    | 
-
+| cuDNN         | 9.x     | Deep learning backend    |
 
 ---
 
