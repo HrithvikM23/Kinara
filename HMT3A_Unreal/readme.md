@@ -1,4 +1,4 @@
-# HMT3A Unreal v2
+# HMT3A Unreal
 
 This folder contains a reworked version of the Unreal-side Python pipeline.
 
