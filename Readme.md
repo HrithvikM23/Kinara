@@ -1,8 +1,8 @@
 # Human Motion to Animation Pipeline (HMT3A)
 
-A **real-time human motion capture pipeline** that converts human movement from a webcam or video into **3D character animation inside Unreal Engine 5**.
+A human motion capture pipeline that converts human movement from a webcam or video into 3D character animation inside Unreal Engine 5.
 
-The system now tracks **body + hands simultaneously**, streams joint data over UDP, and records the processed video output for debugging and dataset generation.
+The system now tracks body + hands together, supports multi-camera input, streams fused joint data over UDP, records raw and processed outputs, and uses a 2-stage workflow with a preview pass first and an optional final render pass after confirmation.
 
 ---
 
@@ -10,9 +10,10 @@ The system now tracks **body + hands simultaneously**, streams joint data over U
 
 ## Hardware
 
-* NVIDIA GPU (CUDA-capable, recommended)
 * Webcam or video file input
-* Minimum **16GB RAM** recommended
+* Minimum 16GB RAM recommended
+* NVIDIA GPU recommended for heavier workloads
+* Multi-camera setup optional
 
 ## Required Software
 
@@ -20,23 +21,8 @@ The system now tracks **body + hands simultaneously**, streams joint data over U
 | ------------- | ------- | ------------------------ |
 | Unreal Engine | 5.4     | Target animation runtime |
 | Python        | 3.11.9  | Pipeline scripting       |
-| CUDA Toolkit  | 13.2    | GPU acceleration         |
-| cuDNN         | 9.x     | Deep learning backend    |
-
----
-
-# Why MediaPipe over OpenPose
-
-OpenPose was originally chosen but was abandoned due to incompatibilities between its bundled **Caffe binaries (compiled for sm_35)** and modern NVIDIA GPUs (RTX 50-series Blackwell architecture).
-
-MediaPipe BlazePose was adopted because it:
-
-* Installs with **one pip command**
-* Works with **modern NVIDIA GPUs**
-* Outputs **33 landmarks with full 3D coordinates**
-* Is **actively maintained by Google**
-* Runs significantly **faster on modern hardware**
-
+| CUDA Toolkit  | 13.2    | Optional acceleration    |
+| cuDNN         | 9.x     | Optional backend support |
 ---
 
 # Installation
@@ -51,7 +37,7 @@ https://www.python.org/downloads/release/python-3119/
 
 During installation:
 
-✔ Check **Add Python to PATH**
+Check Add Python to PATH
 
 ---
 
@@ -63,19 +49,19 @@ Download from:
 
 Select:
 
-Windows → x86_64 → exe (local)
+Windows -> x86_64 -> exe (local)
 
-Run installer with **Express Install**.
+Run installer with Express Install.
 
 ---
 
 ## 3. Install cuDNN
 
-1. Go to ([cuDNN](https://developer.nvidia.com/cudnn))
-2. Download **cuDNN for CUDA 13.x**
+1. Go to [cuDNN](https://developer.nvidia.com/cudnn)
+2. Download cuDNN for CUDA 13.x
 3. Extract contents into:
 
-```
+```txt
 C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\
 ```
 
@@ -83,7 +69,7 @@ C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\
 
 ## 4. Install Python Dependencies
 
-```
+```bash
 pip install mediapipe opencv-python numpy
 ```
 
@@ -91,7 +77,7 @@ pip install mediapipe opencv-python numpy
 
 ## 5. Set Up the Project
 
-```
+```bash
 cd D:\IDT
 git clone https://github.com/HrithvikM23/HMT3A.git
 
@@ -100,7 +86,7 @@ cd HMT3A\HMT3A_Unreal
 
 Initialize Python packages:
 
-```
+```bash
 type nul > camera\__init__.py
 type nul > pose_server\__init__.py
 type nul > network\__init__.py
@@ -112,26 +98,32 @@ type nul > utils\__init__.py
 
 # Project Goal
 
-Build a **real-time motion capture pipeline** capable of:
+Build a motion capture pipeline capable of:
 
-* Tracking **human body movement**
-* Tracking **finger motion**
-* Extracting **3D joint coordinates**
-* Streaming motion data into **Unreal Engine**
-* Driving **MetaHuman characters**
-* Recording **processed tracking video**
-* Producing reusable **animation data**
+* Tracking human body movement
+* Tracking finger motion
+* Extracting 3D joint coordinates
+* Supporting single-camera and multi-camera setups
+* Streaming motion data into Unreal Engine
+* Driving MetaHuman characters
+* Recording raw and processed tracking video
+* Producing reusable animation data
+* Providing a fast preview pass before final rendering
 
 ---
 
 # System Architecture
 
-```
-Camera / Video File
+```txt
+Camera / Video File(s)
         ↓
 MediaPipe Pose + Hand Tracking
         ↓
-Body Landmarks (22) + Hand Landmarks (21x2)
+Body Landmarks + Hand Landmarks
+        ↓
+Per-Camera Landmark Detection
+        ↓
+Multi-Camera Fusion (optional)
         ↓
 Unified Landmark Packet
         ↓
@@ -141,30 +133,30 @@ Unreal Engine Receiver
         ↓
 Skeleton Mapping
         ↓
-Real-time Character Animation
+Character Animation
 ```
 
 ---
 
 # Tracking System
 
-The pipeline now uses a **multimodal tracking approach**.
+The pipeline now uses a multimodal tracking approach.
 
 ### Body Tracking
 
-Based on **MediaPipe BlazePose**.
+Based on MediaPipe BlazePose.
 
-Head landmarks are removed to avoid conflicts with Unreal's MetaHuman face tracking.
+Head landmarks are removed to avoid conflicts with Unreal MetaHuman face systems.
 
 Remaining body joints:
 
-```
-Indices 11 → 32
+```txt
+Indices 11 -> 32
 ```
 
 Total body joints used:
 
-```
+```txt
 22 landmarks
 ```
 
@@ -172,26 +164,26 @@ Total body joints used:
 
 ### Hand Tracking
 
-MediaPipe **Hand Landmarker** provides:
+MediaPipe Hand Landmarker provides:
 
-```
+```txt
 21 landmarks per hand
 ```
 
 Joint structure:
 
-```
+```txt
 wrist
-thumb_cmc → thumb_tip
-index_mcp → index_tip
-middle_mcp → middle_tip
-ring_mcp → ring_tip
-pinky_mcp → pinky_tip
+thumb_cmc -> thumb_tip
+index_mcp -> index_tip
+middle_mcp -> middle_tip
+ring_mcp -> ring_tip
+pinky_mcp -> pinky_tip
 ```
 
 Total landmarks:
 
-```
+```txt
 21 left hand
 21 right hand
 ```
@@ -202,7 +194,7 @@ Total landmarks:
 
 The UDP packet contains:
 
-```
+```txt
 Body      : 22 joints
 LeftHand  : 21 joints
 RightHand : 21 joints
@@ -210,26 +202,57 @@ RightHand : 21 joints
 
 Total possible joints per frame:
 
-```
+```txt
 64 landmarks
 ```
 
-All coordinates include:
+Coordinates include:
 
-```
+```txt
 x
 y
 z
 visibility
 ```
 
+Hand confidence is also included when available.
+
+---
+
+# Multi-Camera Support
+
+The pipeline supports multiple camera roles.
+
+Default primary camera:
+
+```txt
+front
+```
+
+Optional additional roles:
+
+```txt
+back
+right
+left
+up
+```
+
+The user selects:
+
+* Number of cameras
+* Which role each camera should use
+* Number of people to track
+
+Each camera runs detection independently, and the system can fuse joint data into one final skeleton. The primary camera remains the default source, while backup cameras help when joints are missing or weak.
+
 ---
 
 # Packet Streaming
 
-Data is streamed via **UDP**.
+Data is streamed via UDP.
 
-```
+```txt
 IP:   127.0.0.1
 Port: 7000
 Format: JSON (UTF-8)
@@ -237,151 +260,197 @@ Format: JSON (UTF-8)
 
 Example packet:
 
-```
+```json
 {
   "frame": 102,
+  "timestamp_ms": 3400,
+  "source_fps": 30.0,
   "count": 1,
-  "body": {...},
-  "left_hand": {...},
-  "right_hand": {...}
+  "persons": [
+    {
+      "id": 0,
+      "body": {},
+      "left_hand": {},
+      "right_hand": {},
+      "bones": {},
+      "angles": {}
+    }
+  ]
 }
 ```
 
-Average streaming rate:
-
-```
-~30 FPS
-≈33 ms latency
-```
+The packet contains fused per-person landmark data ready for Unreal-side parsing.
 
 ---
 
 # Video Output System
 
-The pipeline records the **processed tracking frames**.
+The pipeline now uses a 2-stage workflow.
 
-Files are saved automatically in:
+### Stage 1: Preview Pass
 
+* Generates a rough preview animation
+* Streams preview data over UDP
+* Records raw webcam input if live cameras are used
+* Lets the user quickly judge if the capture is usable
+
+### Stage 2: Final Render Pass
+
+* Starts only after user confirmation
+* Uses the recorded or uploaded source media
+* Produces the final processed animation output
+* Saves results to dedicated output folders
+
+Output folders:
+
+```txt
+outputs/raw_captures/
+outputs/final_renders/
 ```
-outputs/
+
+These outputs are useful for:
+
+* debugging
+* dataset generation
+* reprocessing
+* animation review
+
+---
+
+# FPS and Resolution Behavior
+
+The system now uses source media settings by default.
+
+### FPS
+
+* Single source: uses that source FPS
+* Multiple sources: uses the lowest FPS across all sources
+* Manual FPS cap can be applied if needed
+
+Examples:
+
+```txt
+120 FPS video  -> 120 FPS processing
+30 FPS video   -> 30 FPS processing
+60 + 30 + 24   -> 24 FPS processing
 ```
 
-Naming scheme:
+### Resolution
 
-```
-video.mp4
-video1.mp4
-video2.mp4
-...
-```
-
-These videos contain:
-
-* body skeleton overlay
-* hand skeleton overlay
-* real tracking results
-
-This is used for **debugging and dataset generation**.
+* Native recorded resolution is used by default
+* Manual width and height override can be applied if needed
 
 ---
 
 # Project Structure
 
-```
+```txt
 HMT3A/
 ├── HMT3A_Blender/
 ├── HMT3A_Unreal/
-│
-│   main.py
-│   config.py
-│
-├── camera/
-│   video_input.py
-│   webcam_input.py
-│
-├── pose_server/
-│   pose_detector.py
-│
-├── network/
-│   packet_builder.py
-│   udp_sender.py
-│
-├── process/
-│   skeleton_builder.py
-│   angle_calculator.py
-│
-└── utils/
-    video_output.py
-    smoothing.py
-    math_utils.py
+│   ├── main.py
+│   ├── config.py
+│   ├── camera/
+│   │   ├── video_input.py
+│   │   └── webcam_input.py
+│   ├── pose_server/
+│   │   └── pose_detector.py
+│   ├── network/
+│   │   ├── packet_builder.py
+│   │   └── udp_sender.py
+│   ├── process/
+│   │   ├── skeleton_builder.py
+│   │   ├── angle_calculator.py
+│   │   └── multi_camera_fusion.py
+│   └── utils/
+│       ├── video_output.py
+│       ├── smoothing.py
+│       └── math_utils.py
 ```
 
 ---
 
 # How to Run
 
-## Step 1 — Launch Unreal Engine
+## Step 1 - Launch Unreal Engine
 
 1. Open Unreal project
 2. Load the animation receiver scene
-3. Press **Play**
+3. Press Play
 
 ---
 
-## Step 2 — Run the Python Pipeline
+## Step 2 - Run the Python Pipeline
 
-```
+```bash
 cd D:\IDT\HMT3A\HMT3A_Unreal
 python main.py
 ```
 
-Program menu:
+Program flow:
 
-```
-Enter number of people to track:
-
+```txt
+Enter number of people to track
 Select input source
-1 → Webcam
-2 → Video file
+1 -> Webcam
+2 -> Video file
+Enter number of cameras
+Assign camera roles
+Preview pass starts
+Proceed with final render? [Y/n]
 ```
 
-Press **ESC** to exit.
+Press ESC to exit preview windows.
 
+Optional examples:
 
-# Current Development Status
+```bash
+python main.py --source 0 --max-persons 1
+python main.py --source "C:\path\to\video.mp4" --no-preview
+python main.py --source 0 --fps-cap 30 --width 1280 --height 720
+```
+
 ---
 
-| Component                    | Status         |
-|------------------------------|----------------|
-| Camera input                 | Complete       |
-| Video file input             | Complete       |
-| Multi-source input selector  | Complete       |
-| BlazePose integration        | Complete       |
-| Hand tracking (21 landmarks) | Complete       |
-| Head landmark filtering      | Complete       |
-| Packet builder               | Complete       |
-| Dynamic landmark packet map  | Complete       |
-| UDP streaming                | Complete       |
-| Configurable UDP settings    | Complete       |
-| Video recording              | Complete       |
-| Auto video file indexing     | Complete       |
-| Variable FPS configuration   | In Development |
-| Frame timestamp system       | Complete       |
-| Async inference timestamps   | Complete       |
-| Skeleton builder             | In Development |
-| Bone reconstruction          | Planned        |
-| Bone rotation solver         | Planned        |
-| Quaternion conversion        | Planned        |
-| Landmark smoothing filter    | Planned        |
-| Hand jitter reduction        | Planned        |
-| Multi-person tracking        | Planned        |
-| Unreal UDP receiver          | Planned        |
-| Unreal JSON packet parser    | Planned        |
-| Unreal Control Rig mapping   | Planned        |
-| MetaHuman skeleton mapping   | Planned        |
-| Animation recording system   | Planned        |
-| Motion playback system       | Planned        |
-| Animation export (FBX)       | Planned        |
+# Current Development Status
+
+| Component                          | Status         |
+|-----------------------------------|----------------|
+| Camera input                       | Complete       |
+| Video file input                   | Complete       |
+| Multi-source input selector        | Complete       |
+| Camera role selection              | Complete       |
+| Multi-camera role system           | Complete       |
+| BlazePose integration              | Complete       |
+| Hand tracking (21 landmarks)       | Complete       |
+| Head landmark filtering            | Complete       |
+| Packet builder                     | Complete       |
+| Dynamic landmark packet map        | Complete       |
+| UDP streaming                      | Complete       |
+| Configurable UDP settings          | Complete       |
+| Raw capture recording              | Complete       |
+| Final render output                | Complete       |
+| Variable FPS configuration         | Complete       |
+| Native/lowest FPS selection        | Complete       |
+| Manual FPS cap                     | Complete       |
+| Manual resolution override         | Complete       |
+| Frame timestamp system             | Complete       |
+| Preview-first workflow             | Complete       |
+| Multi-camera fusion                | Complete       |
+| Landmark smoothing                 | Complete       |
+| Wrist-guided hand ROI logic        | Complete       |
+| Skeleton builder                   | In Development |
+| Bone reconstruction                | In Development |
+| Bone rotation solver               | Planned        |
+| Quaternion conversion              | Planned        |
+| Hand jitter reduction              | Planned        |
+| Unreal UDP receiver                | Planned        |
+| Unreal JSON packet parser          | Planned        |
+| Unreal Control Rig mapping         | Planned        |
+| MetaHuman skeleton mapping         | Planned        |
+| Animation recording system         | Planned        |
+| Motion playback system             | Planned        |
+| Animation export (FBX)             | Planned        |
 
 ---
 
@@ -391,19 +460,19 @@ Next development goals:
 
 ### Skeleton Builder
 
-Convert raw landmark positions into **hierarchical skeleton data**.
+Convert raw landmark positions into hierarchical skeleton data.
 
 ### Bone Rotation Solver
 
-Compute **quaternion rotations** from joint vectors.
-
-### Landmark Smoothing
-
-Implement **One-Euro filter** to remove jitter.
+Compute quaternion rotations from joint vectors.
 
 ### Unreal Receiver
 
-Blueprint system that converts UDP packets into **Control Rig animation**.
+Build the Unreal-side system that converts UDP packets into Control Rig animation.
+
+### Final Animation Cleanup
+
+Improve fused motion quality, hand stability, and export-ready animation output.
 
 ---
 
@@ -435,12 +504,13 @@ Blueprint system that converts UDP packets into **Control Rig animation**.
 
 # Project Phase
 
-**Alpha Development**
+Alpha Development
 
 Current focus:
 
-```
-Data Fusion
+```txt
+Multi-Camera Fusion
 Packet Optimization
-Real-time Animation Streaming
+Skeleton Reconstruction
+Unreal Animation Mapping
 ```
