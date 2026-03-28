@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -7,9 +7,15 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = BASE_DIR / "outputs"
 MODEL_DIR = BASE_DIR / "models"
+RAW_CAPTURE_DIR = OUTPUT_DIR / "raw_captures"
+FINAL_RENDER_DIR = OUTPUT_DIR / "final_renders"
 
 UDP_IP = "127.0.0.1"
 UDP_PORT = 7000
+
+PRIMARY_CAMERA_ROLE = "front"
+OPTIONAL_CAMERA_ROLES = ("back", "right", "left", "up")
+MAX_OPTIONAL_CAMERAS = len(OPTIONAL_CAMERA_ROLES)
 
 POSE_MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
@@ -76,6 +82,8 @@ HAND_INDEX_BY_NAME = {name: index for index, name in enumerate(HAND_LANDMARKS)}
 
 LEFT_SHOULDER_INDEX = 11
 RIGHT_SHOULDER_INDEX = 12
+LEFT_ELBOW_INDEX = 13
+RIGHT_ELBOW_INDEX = 14
 LEFT_WRIST_INDEX = 15
 RIGHT_WRIST_INDEX = 16
 LEFT_HIP_INDEX = 23
@@ -96,11 +104,27 @@ class PipelineConfig:
     smoothing_alpha: float = 0.65
     preview: bool = True
     record_output: bool = True
+    render_output: bool = True
+    enable_hand_roi: bool = True
+    hand_roi_scale: float = 2.2
+    hand_roi_min_size: int = 160
+    hand_roi_fallback_to_full_frame: bool = True
+    preview_target_fps: float | None = None
     source_fps_fallback: float = 30.0
+    manual_fps_cap: float | None = None
+    manual_resolution_width: int | None = None
+    manual_resolution_height: int | None = None
     output_dir: Path = OUTPUT_DIR
     model_dir: Path = MODEL_DIR
+    raw_capture_dir: Path = RAW_CAPTURE_DIR
+    final_render_dir: Path = FINAL_RENDER_DIR
+
 
 
 def ensure_runtime_directories(config: PipelineConfig) -> None:
     config.output_dir.mkdir(parents=True, exist_ok=True)
     config.model_dir.mkdir(parents=True, exist_ok=True)
+    config.raw_capture_dir.mkdir(parents=True, exist_ok=True)
+    config.final_render_dir.mkdir(parents=True, exist_ok=True)
+
+
