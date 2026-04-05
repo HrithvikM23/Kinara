@@ -116,23 +116,23 @@ Build a motion capture pipeline capable of:
 
 ```txt
 Camera / Video File(s)
-        ???
+        ↓
 MediaPipe Pose + Hand Tracking
-        ???
+        ↓
 Body Landmarks + Hand Landmarks
-        ???
+        ↓
 Per-Camera Landmark Detection
-        ???
+        ↓
 Multi-Camera Fusion (optional)
-        ???
+        ↓
 Unified Landmark Packet
-        ???
+        ↓
 UDP Streaming (JSON)
-        ???
+        ↓
 Unreal Engine Receiver
-        ???
+        ↓
 Skeleton Mapping
-        ???
+        ↓
 Character Animation
 ```
 
