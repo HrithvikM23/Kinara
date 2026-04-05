@@ -116,23 +116,23 @@ Build a motion capture pipeline capable of:
 
 ```txt
 Camera / Video File(s)
-        ↓
+        ???
 MediaPipe Pose + Hand Tracking
-        ↓
+        ???
 Body Landmarks + Hand Landmarks
-        ↓
+        ???
 Per-Camera Landmark Detection
-        ↓
+        ???
 Multi-Camera Fusion (optional)
-        ↓
+        ???
 Unified Landmark Packet
-        ↓
+        ???
 UDP Streaming (JSON)
-        ↓
+        ???
 Unreal Engine Receiver
-        ↓
+        ???
 Skeleton Mapping
-        ↓
+        ???
 Character Animation
 ```
 
@@ -306,6 +306,7 @@ Output folders:
 ```txt
 outputs/raw_captures/
 outputs/final_renders/
+outputs/motion_exports/
 ```
 
 These outputs are useful for:
@@ -314,6 +315,7 @@ These outputs are useful for:
 * dataset generation
 * reprocessing
 * animation review
+* offline reuse in DCC tools
 
 ---
 
@@ -346,26 +348,17 @@ Examples:
 
 ```txt
 HMT3A/
-├── HMT3A_Blender/
-├── HMT3A_Unreal/
-│   ├── main.py
-│   ├── config.py
-│   ├── camera/
-│   │   ├── video_input.py
-│   │   └── webcam_input.py
-│   ├── pose_server/
-│   │   └── pose_detector.py
-│   ├── network/
-│   │   ├── packet_builder.py
-│   │   └── udp_sender.py
-│   ├── process/
-│   │   ├── skeleton_builder.py
-│   │   ├── angle_calculator.py
-│   │   └── multi_camera_fusion.py
-│   └── utils/
-│       ├── video_output.py
-│       ├── smoothing.py
-│       └── math_utils.py
+|-- HMT3A_Blender/
+|-- HMT3A_Unreal/
+|   |-- main.py
+|   |-- config.py
+|   |-- camera/
+|   |-- pose_server/
+|   |-- network/
+|   |-- process/
+|   |-- utils/
+|   |-- outputs/
+|   `-- models/
 ```
 
 ---
@@ -408,49 +401,51 @@ Optional examples:
 python main.py --source 0 --max-persons 1
 python main.py --source "C:\path\to\video.mp4" --no-preview
 python main.py --source 0 --fps-cap 30 --width 1280 --height 720
+python main.py --source 0 --calibration-file "C:\path\to\camera_calibration.json"
+python main.py --source 0 --no-fbx-export
 ```
 
 ---
 
 # Current Development Status
 
-| Component                          | Status         |
-|-----------------------------------|----------------|
-| Camera input                       | Complete       |
-| Video file input                   | Complete       |
-| Multi-source input selector        | Complete       |
-| Camera role selection              | Complete       |
-| Multi-camera role system           | Complete       |
-| BlazePose integration              | Complete       |
-| Hand tracking (21 landmarks)       | Complete       |
-| Head landmark filtering            | Complete       |
-| Packet builder                     | Complete       |
-| Dynamic landmark packet map        | Complete       |
-| UDP streaming                      | Complete       |
-| Configurable UDP settings          | Complete       |
-| Raw capture recording              | Complete       |
-| Final render output                | Complete       |
-| Variable FPS configuration         | Complete       |
-| Native/lowest FPS selection        | Complete       |
-| Manual FPS cap                     | Complete       |
-| Manual resolution override         | Complete       |
-| Frame timestamp system             | Complete       |
-| Preview-first workflow             | Complete       |
-| Multi-camera fusion                | Complete       |
-| Landmark smoothing                 | Complete       |
-| Wrist-guided hand ROI logic        | Complete       |
-| Skeleton builder                   | In Development |
-| Bone reconstruction                | In Development |
-| Bone rotation solver               | Planned        |
-| Quaternion conversion              | Planned        |
-| Hand jitter reduction              | Planned        |
-| Unreal UDP receiver                | Planned        |
-| Unreal JSON packet parser          | Planned        |
-| Unreal Control Rig mapping         | Planned        |
-| MetaHuman skeleton mapping         | Planned        |
-| Animation recording system         | Planned        |
-| Motion playback system             | Planned        |
-| Animation export (FBX)             | Planned        |
+| Component                          | Status   |
+|-----------------------------------|----------|
+| Camera input                       | Complete |
+| Video file input                   | Complete |
+| Multi-source input selector        | Complete |
+| Camera role selection              | Complete |
+| Multi-camera role system           | Complete |
+| BlazePose integration              | Complete |
+| Hand tracking (21 landmarks)       | Complete |
+| Head landmark filtering            | Complete |
+| Packet builder                     | Complete |
+| Dynamic landmark packet map        | Complete |
+| UDP streaming                      | Complete |
+| Configurable UDP settings          | Complete |
+| Raw capture recording              | Complete |
+| Final render output                | Complete |
+| Variable FPS configuration         | Complete |
+| Native/lowest FPS selection        | Complete |
+| Manual FPS cap                     | Complete |
+| Manual resolution override         | Complete |
+| Frame timestamp system             | Complete |
+| Preview-first workflow             | Complete |
+| Calibration-aware multi-camera fusion | Complete |
+| Persistent multi-person tracking   | Complete |
+| Landmark smoothing                 | Complete |
+| Wrist-guided hand ROI logic        | Complete |
+| Skeleton builder                   | Complete |
+| Bone reconstruction                | Complete |
+| Bone rotation solver               | Complete |
+| Quaternion conversion              | Complete |
+| Hand jitter reduction              | Complete |
+| Motion export (JSON/BVH/FBX)       | Complete |
+| Unreal UDP receiver                | Planned  |
+| Unreal JSON packet parser          | Planned  |
+| Unreal Control Rig mapping         | Planned  |
+| MetaHuman skeleton mapping         | Planned  |
+| Motion playback system             | Planned  |
 
 ---
 
@@ -458,21 +453,17 @@ python main.py --source 0 --fps-cap 30 --width 1280 --height 720
 
 Next development goals:
 
-### Skeleton Builder
-
-Convert raw landmark positions into hierarchical skeleton data.
-
-### Bone Rotation Solver
-
-Compute quaternion rotations from joint vectors.
-
 ### Unreal Receiver
 
-Build the Unreal-side system that converts UDP packets into Control Rig animation.
+Build the Unreal-side system that converts UDP packets into live animation input.
 
-### Final Animation Cleanup
+### Control Rig and MetaHuman Mapping
 
-Improve fused motion quality, hand stability, and export-ready animation output.
+Map the client-side skeleton, rotations, and finger data onto the Unreal rig.
+
+### Playback and Cleanup
+
+Add richer offline playback, review, and cleanup tools for exported motion packages.
 
 ---
 
@@ -514,3 +505,4 @@ Packet Optimization
 Skeleton Reconstruction
 Unreal Animation Mapping
 ```
+
