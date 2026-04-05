@@ -16,11 +16,13 @@ from config import (
     PRIMARY_CAMERA_ROLE,
     PipelineConfig,
     ensure_runtime_directories,
+    load_camera_calibrations,
 )
 from network.packet_builder import build_packet
 from network.udp_sender import UDPSender
 from pose_server.pose_detector import PoseDetector
 from process.multi_camera_fusion import MultiCameraFusion
+from utils.motion_export import MotionExporter
 from utils.video_output import VideoWriter
 
 
@@ -60,13 +62,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-persons", type=int, help="Maximum number of people to track")
     parser.add_argument("--udp-ip", help="UDP target IP")
     parser.add_argument("--udp-port", type=int, help="UDP target port")
-    parser.add_argument("--smoothing-alpha", type=float, help="EMA smoothing alpha between 0 and 1")
+    parser.add_argument("--smoothing-alpha", type=float, help="Base smoothing alpha between 0 and 1")
     parser.add_argument("--preview-fps", type=float, help="Target FPS for the live block-animation preview")
     parser.add_argument("--fps-cap", type=float, help="Manual FPS cap for final processing")
     parser.add_argument("--width", type=int, help="Manual output width override")
     parser.add_argument("--height", type=int, help="Manual output height override")
+    parser.add_argument("--calibration-file", help="Optional JSON file that defines per-role camera calibration")
     parser.add_argument("--no-preview", action="store_true", help="Disable live OpenCV preview")
     parser.add_argument("--no-record", action="store_true", help="Disable processed video recording")
+    parser.add_argument("--no-motion-export", action="store_true", help="Disable fused motion export files")
+    parser.add_argument("--no-json-export", action="store_true", help="Disable fused motion JSON export")
+    parser.add_argument("--no-bvh-export", action="store_true", help="Disable BVH animation export")
+    parser.add_argument("--no-fbx-export", action="store_true", help="Disable FBX animation export")
     return parser.parse_args()
 
 
@@ -109,7 +116,7 @@ def prompt_float(prompt: str, minimum: float, default: float) -> float:
 
 
 def prompt_yes_no(prompt: str, default: bool = True) -> bool:
-    default_hint = "Y/n" if default else "y/N"
+    default_hint = "y/n" if default else "Y/N"
     raw = input(f"{prompt} [{default_hint}]: ").strip().lower()
     if not raw:
         return default
@@ -221,6 +228,8 @@ def build_config(args: argparse.Namespace) -> PipelineConfig:
         config.udp_port = args.udp_port
     if args.smoothing_alpha is not None:
         config.smoothing_alpha = args.smoothing_alpha
+        config.body_smoothing_alpha = max(0.05, min(args.smoothing_alpha, 0.95))
+        config.hand_smoothing_alpha = max(0.05, min(args.smoothing_alpha * 0.75, 0.95))
     if args.preview_fps is not None and args.preview_fps > 0:
         config.preview_target_fps = args.preview_fps
 
@@ -239,6 +248,13 @@ def build_config(args: argparse.Namespace) -> PipelineConfig:
     elif prompt_yes_no("Manually set a fixed resolution?", default=False):
         config.manual_resolution_width = prompt_int("Enter width", minimum=1, default=1280)
         config.manual_resolution_height = prompt_int("Enter height", minimum=1, default=720)
+
+    config.enable_motion_export = not args.no_motion_export
+    config.export_json = not args.no_json_export
+    config.export_bvh = not args.no_bvh_export
+    config.export_fbx = not args.no_fbx_export
+    config.camera_calibration_path = args.calibration_file
+    config.calibrations = load_camera_calibrations(config.camera_calibration_path)
 
     ensure_runtime_directories(config)
     return config
@@ -324,13 +340,6 @@ def determine_common_fps(profiles: list[SourceProfile], config: PipelineConfig) 
     if config.manual_fps_cap is not None:
         effective_fps = min(effective_fps, config.manual_fps_cap)
     return max(effective_fps, 1.0)
-
-
-
-def get_timestamp_ms(source: int | str, frame_index: int, source_fps: float, start_time: float) -> int:
-    if isinstance(source, str):
-        return int(frame_index * (1000.0 / max(source_fps, 0.001)))
-    return int((time.perf_counter() - start_time) * 1000.0)
 
 
 
@@ -546,6 +555,12 @@ def run_final_render(assignments: list[SourceAssignment], config: PipelineConfig
         base_name="fused_final",
         frame_size=get_target_frame_size(config),
     )
+    exporter = MotionExporter(
+        output_dir=config.motion_export_dir,
+        enabled=config.enable_motion_export,
+        source_fps=session_fps,
+        base_name="fused_motion",
+    )
     output_frame_index = 0
     started_at = time.perf_counter()
     last_final_log_at = 0.0
@@ -556,6 +571,8 @@ def run_final_render(assignments: list[SourceAssignment], config: PipelineConfig
         print(f"Using fixed resolution: {target_size[0]}x{target_size[1]}")
     else:
         print("Using recorded/native resolution for each source.")
+    if config.camera_calibration_path:
+        print(f"Using calibration file: {config.camera_calibration_path}")
 
     try:
         while True:
@@ -584,6 +601,11 @@ def run_final_render(assignments: list[SourceAssignment], config: PipelineConfig
             )
             sender.send(packet)
             writer.write(primary_render)
+            exporter.record_frame(
+                frame_index=output_frame_index,
+                timestamp_ms=timestamp_ms,
+                persons=fused_people,
+            )
 
             now = time.perf_counter()
             if (now - last_final_log_at) >= 1.0:
@@ -606,8 +628,13 @@ def run_final_render(assignments: list[SourceAssignment], config: PipelineConfig
     finally:
         close_source_states(states)
         writer.close()
+        export_paths = exporter.close(export_json=config.export_json, export_bvh=config.export_bvh, export_fbx=config.export_fbx)
         sender.close()
         cv2.destroyAllWindows()
+        if export_paths:
+            print("Motion exports created:")
+            for export_path in export_paths:
+                print(f"- {export_path}")
 
 
 
@@ -645,10 +672,6 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
-
-
-
 
 
 
