@@ -1,31 +1,22 @@
-# HMT3A Unreal
+# HMT3A Unreal Client Pipeline
 
-This folder contains a reworked version of the Unreal-side Python pipeline.
+This folder contains the client-side motion pipeline that prepares fused tracking data for downstream animation systems.
 
-## What changed
+## What is implemented
 
-- Keeps the original project untouched.
-- Uses a fixed JSON packet schema for every frame.
-- Separates `body`, `left_hand`, and `right_hand` data per person.
-- Assigns hands to people using MediaPipe handedness plus wrist proximity.
-- Adds smoothing to reduce landmark jitter.
-- Adds bone vectors and joint angles to each packet for easier Unreal mapping.
-- Uses safer input handling and cleanup in `main.py`.
-- Stores downloaded MediaPipe task models in a local `models/` folder.
-- Adds a 2-stage workflow with a preview pass first and an optional final render pass after confirmation.
-- Supports both live webcam input and uploaded video files.
-- Prompts for the number of people to track.
-- Prompts for camera count and camera roles, with `front` as the default primary camera.
-- Supports extra camera roles such as `back`, `right`, `left`, and `up`.
-- Records raw live camera feeds during preview for later final rendering.
-- Writes final offline renders into a separate `final_renders/` folder.
-- Adds multi-camera fusion so one fused skeleton is streamed instead of using only the front camera.
-- Uses config-driven rendering so only the required camera feed draws overlays.
-- Adds wrist-guided hand ROI logic with support for fallback handling when needed.
-- Supports manual FPS cap and manual resolution overrides.
-- Uses source FPS by default, or the lowest FPS when multiple sources are used together.
-- Uses native recorded resolution by default unless a manual resolution override is provided.
-- Reduces preview overhead by removing duplicate smoothing and throttling console logging.
+- Webcam and video-file capture
+- Multi-camera role assignment with optional calibration JSON
+- Body and hand landmark detection
+- Wrist-guided hand ROI processing
+- Calibration-aware multi-camera fusion into a shared space
+- Persistent multi-person IDs across frames
+- Adaptive smoothing with stronger hand jitter reduction
+- Hierarchical skeleton reconstruction for body and hands
+- Joint rotation solving with quaternion and Euler output
+- Joint-angle extraction for major limbs and finger curls
+- Preview pass plus final offline render pass
+- UDP packet streaming
+- Reusable motion export to JSON, BVH, and FBX
 
 ## Run
 
@@ -35,52 +26,70 @@ From this folder:
 python main.py
 ```
 
-Optional CLI flags:
+Optional examples:
 
 ```bash
 python main.py --source 0 --max-persons 1
 python main.py --source "C:\path\to\video.mp4" --no-preview
 python main.py --source 0 --fps-cap 30 --width 1280 --height 720
+python main.py --source 0 --calibration-file "C:\path\to\camera_calibration.json"
+python main.py --source 0 --no-fbx-export
+```
+
+## New CLI flags
+
+- `--calibration-file` loads per-role extrinsic calibration data from JSON
+- `--no-motion-export` disables all fused motion file export
+- `--no-json-export` disables JSON motion export only
+- `--no-bvh-export` disables BVH animation export only
+- `--no-fbx-export` disables FBX animation export only
+
+## Motion outputs
+
+During final render the pipeline now writes:
+
+- processed preview/final videos into `outputs/final_renders/`
+- reusable motion data into `outputs/motion_exports/`
+
+Motion export files include:
+
+- fused frame JSON
+- one BVH file per tracked person
+- one FBX file per tracked person
+
+FBX export runs through Blender in background when Blender is available on the machine.
+
+## Calibration JSON shape
+
+A calibration file is a JSON object keyed by role name.
+
+```json
+{
+  "front": {
+    "rotation_deg": [0.0, 0.0, 0.0],
+    "translation": [0.0, 0.0, 0.0],
+    "scale": 1.0,
+    "confidence_weight": 1.0
+  },
+  "right": {
+    "rotation_deg": [0.0, 90.0, 0.0],
+    "translation": [0.0, 0.0, 0.0],
+    "scale": 1.0,
+    "confidence_weight": 0.98
+  }
+}
 ```
 
 ## Packet shape
 
-Each frame is streamed as JSON over UDP:
+Each streamed person now contains:
 
-```json
-{
-  "frame": 12,
-  "timestamp_ms": 410,
-  "source_fps": 30.0,
-  "count": 1,
-  "persons": [
-    {
-      "id": 0,
-      "body": {
-        "present": true,
-        "joints": {
-          "left_shoulder": { "x": 0.0, "y": 0.0, "z": 0.0, "visibility": 1.0 }
-        }
-      },
-      "left_hand": {
-        "present": true,
-        "confidence": 0.98,
-        "joints": {
-          "wrist": { "x": 0.0, "y": 0.0, "z": 0.0 }
-        }
-      },
-      "right_hand": {
-        "present": false,
-        "confidence": null,
-        "joints": {
-          "wrist": null
-        }
-      },
-      "bones": {},
-      "angles": {}
-    }
-  ]
-}
-```
+- `body`
+- `left_hand`
+- `right_hand`
+- `bones`
+- `angles`
+- `skeleton`
+- `rotations`
 
-This makes it easier for an Unreal receiver to consume the data consistently.
+This makes the client output suitable for live preview, offline cleanup, and non-Unreal animation export.
