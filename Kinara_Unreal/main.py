@@ -11,6 +11,7 @@ import cv2
 
 from camera.video_input import choose_video
 from config import (
+    IdentityProfile,
     MAX_OPTIONAL_CAMERAS,
     OPTIONAL_CAMERA_ROLES,
     PRIMARY_CAMERA_ROLE,
@@ -20,7 +21,7 @@ from config import (
 )
 from network.packet_builder import build_packet
 from network.udp_sender import UDPSender
-from pose_server.pose_detector import PoseDetector
+from pose_server.assisted_pose_detector import PoseDetector
 from process.multi_camera_fusion import MultiCameraFusion
 from utils.motion_export import MotionExporter
 from utils.video_output import VideoWriter
@@ -74,8 +75,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-json-export", action="store_true", help="Disable fused motion JSON export")
     parser.add_argument("--no-bvh-export", action="store_true", help="Disable BVH animation export")
     parser.add_argument("--no-fbx-export", action="store_true", help="Disable FBX animation export")
+    parser.add_argument("--no-yolo", action="store_true", help="Disable YOLO person assist during final render")
+    parser.add_argument("--yolo-model", help="YOLO model name or local path for final render assist")
+    parser.add_argument("--yolo-confidence", type=float, help="Minimum YOLO person confidence")
+    parser.add_argument("--no-mask-rcnn", action="store_true", help="Disable Mask R-CNN refinement during final render")
+    parser.add_argument("--mask-rcnn-score", type=float, help="Minimum Mask R-CNN person score")
+    parser.add_argument("--no-identity-memory", action="store_true", help="Disable color-based identity memory")
+    parser.add_argument("--body-detection-confidence", type=float, help="Minimum MediaPipe body detection confidence")
+    parser.add_argument("--body-presence-confidence", type=float, help="Minimum MediaPipe body presence confidence")
+    parser.add_argument("--body-tracking-confidence", type=float, help="Minimum MediaPipe body tracking confidence")
+    parser.add_argument("--hand-detection-confidence", type=float, help="Minimum MediaPipe hand detection confidence")
+    parser.add_argument("--hand-presence-confidence", type=float, help="Minimum MediaPipe hand presence confidence")
+    parser.add_argument("--hand-tracking-confidence", type=float, help="Minimum MediaPipe hand tracking confidence")
+    parser.add_argument("--rcnn-confidence", type=float, help="Alias for minimum Mask R-CNN person score")
     return parser.parse_args()
-
 
 
 def prompt_int(prompt: str, minimum: int, default: int, maximum: int | None = None) -> int:
@@ -122,6 +135,51 @@ def prompt_yes_no(prompt: str, default: bool = True) -> bool:
         return default
     return raw in {"y", "yes"}
 
+
+
+IDENTITY_COLOR_OPTIONS = ("orange", "yellow", "red", "green", "blue", "purple", "pink", "white", "black", "gray")
+IDENTITY_REGION_OPTIONS = ("top", "torso", "full")
+
+
+def prompt_choice(prompt: str, options: tuple[str, ...], default: str) -> str:
+    option_map = {str(index): option for index, option in enumerate(options, start=1)}
+    while True:
+        print("=" * 50)
+        for index, option in enumerate(options, start=1):
+            print(f"{index}. {option}")
+        print("=" * 50)
+        raw = input(f"{prompt} [{default}]: ").strip().lower()
+        if not raw:
+            return default
+        if raw in option_map:
+            return option_map[raw]
+        if raw in options:
+            return raw
+        print("Please choose one of the listed options.")
+
+
+def prompt_identity_profiles(max_persons: int) -> list[IdentityProfile]:
+    profiles: list[IdentityProfile] = []
+    if max_persons <= 1:
+        return profiles
+    if not prompt_yes_no("Configure color-based identity memory for each person?", default=True):
+        return profiles
+
+    for person_index in range(max_persons):
+        default_label = f"Person {person_index + 1}"
+        label = input(f"Label for slot {person_index + 1} [{default_label}]: ").strip() or default_label
+        color_name = prompt_choice(
+            f"Which standout color best identifies {label}?",
+            IDENTITY_COLOR_OPTIONS,
+            default=IDENTITY_COLOR_OPTIONS[min(person_index, len(IDENTITY_COLOR_OPTIONS) - 1)],
+        )
+        region = prompt_choice(
+            f"Where is that color easiest to see for {label}?",
+            IDENTITY_REGION_OPTIONS,
+            default="top",
+        )
+        profiles.append(IdentityProfile(slot_id=person_index + 1, label=label, color_name=color_name, region=region))
+    return profiles
 
 
 def prompt_for_input_mode() -> str:
@@ -230,9 +288,32 @@ def build_config(args: argparse.Namespace) -> PipelineConfig:
         config.smoothing_alpha = args.smoothing_alpha
         config.body_smoothing_alpha = max(0.05, min(args.smoothing_alpha, 0.95))
         config.hand_smoothing_alpha = max(0.05, min(args.smoothing_alpha * 0.75, 0.95))
+    if args.body_detection_confidence is not None and args.body_detection_confidence > 0:
+        config.min_pose_detection_confidence = args.body_detection_confidence
+    if args.body_presence_confidence is not None and args.body_presence_confidence > 0:
+        config.min_pose_presence_confidence = args.body_presence_confidence
+    if args.body_tracking_confidence is not None and args.body_tracking_confidence > 0:
+        config.min_tracking_confidence = args.body_tracking_confidence
+    if args.hand_detection_confidence is not None and args.hand_detection_confidence > 0:
+        config.min_hand_detection_confidence = args.hand_detection_confidence
+    if args.hand_presence_confidence is not None and args.hand_presence_confidence > 0:
+        config.min_hand_presence_confidence = args.hand_presence_confidence
+    if args.hand_tracking_confidence is not None and args.hand_tracking_confidence > 0:
+        config.min_hand_tracking_confidence = args.hand_tracking_confidence
     if args.preview_fps is not None and args.preview_fps > 0:
         config.preview_target_fps = args.preview_fps
-
+    config.enable_identity_memory = max_persons > 1 and not args.no_identity_memory
+    config.identity_profiles = prompt_identity_profiles(max_persons) if config.enable_identity_memory else []
+    config.enable_yolo_identity_assist = max_persons > 1 and not args.no_yolo
+    if args.yolo_model:
+        config.yolo_model_name = args.yolo_model
+    if args.yolo_confidence is not None and args.yolo_confidence > 0:
+        config.yolo_person_confidence = args.yolo_confidence
+    config.enable_mask_rcnn_refinement = config.enable_yolo_identity_assist and not args.no_mask_rcnn
+    if args.mask_rcnn_score is not None and args.mask_rcnn_score > 0:
+        config.mask_rcnn_score_threshold = args.mask_rcnn_score
+    if args.rcnn_confidence is not None and args.rcnn_confidence > 0:
+        config.mask_rcnn_score_threshold = args.rcnn_confidence
     if args.fps_cap is not None and args.fps_cap > 0:
         config.manual_fps_cap = args.fps_cap
     elif prompt_yes_no("Manually set an FPS cap?", default=False):
@@ -350,6 +431,47 @@ def draw_runtime_overlay(frame, frame_index: int, people_count: int, runtime_fps
     cv2.putText(frame, f"FPS: {runtime_fps:.1f}", (12, 104), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (40, 255, 40), 2, cv2.LINE_AA)
 
 
+def draw_identity_overlay(frame, people: list[dict]) -> None:
+    frame_height, frame_width = frame.shape[:2]
+    for person in people:
+        bbox = person.get("_bbox")
+        if bbox is None:
+            continue
+
+        identity = person.get("identity") or {}
+        label = identity.get("label") or f"Person {person.get('id', '?')}"
+        top_color = identity.get("top_color")
+        if top_color:
+            label = f"{label} | {top_color}"
+
+        color = (0, 255, 255)
+        cv2.rectangle(frame, (bbox["x0"], bbox["y0"]), (bbox["x1"], bbox["y1"]), color, 2)
+
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.5
+        thickness = 1
+        (text_width, text_height), baseline = cv2.getTextSize(label, font, font_scale, thickness)
+        label_x0 = max(0, min(int(bbox["x0"]), frame_width - text_width - 10))
+        preferred_y1 = int(bbox["y0"]) - 6
+        if preferred_y1 - text_height - baseline - 6 < 0:
+            label_y0 = min(frame_height - text_height - baseline - 6, int(bbox["y0"]) + 6)
+        else:
+            label_y0 = preferred_y1 - text_height - baseline - 6
+        label_y0 = max(0, label_y0)
+        label_x1 = min(frame_width, label_x0 + text_width + 10)
+        label_y1 = min(frame_height, label_y0 + text_height + baseline + 6)
+
+        cv2.rectangle(frame, (label_x0, label_y0), (label_x1, label_y1), color, -1)
+        cv2.putText(
+            frame,
+            label,
+            (label_x0 + 5, label_y1 - baseline - 3),
+            font,
+            font_scale,
+            (0, 0, 0),
+            thickness,
+            cv2.LINE_AA,
+        )
 
 def open_source_states(assignments: list[SourceAssignment], config: PipelineConfig) -> list[SourceState]:
     states: list[SourceState] = []
@@ -447,6 +569,8 @@ def run_preview_session(assignments: list[SourceAssignment], config: PipelineCon
         render_output=config.preview,
         enable_hand_roi=False,
         hand_roi_fallback_to_full_frame=False,
+        enable_yolo_identity_assist=False,
+        enable_mask_rcnn_refinement=False,
     )
     states = open_source_states(assignments, preview_config)
     raw_writers: dict[str, VideoWriter] = {}
@@ -485,12 +609,13 @@ def run_preview_session(assignments: list[SourceAssignment], config: PipelineCon
 
             if should_process:
                 detections_by_role, rendered_by_role = render_detection_group(states, frames_by_role, timestamp_ms)
-                fused_people = fusion.fuse_frame(detections_by_role)
+                fused_people = fusion.fuse_frame(detections_by_role, frame_index=preview_frame_index, timestamp_ms=timestamp_ms)
                 latest_primary_render = rendered_by_role[assignments[0].role]
 
                 elapsed = max(time.perf_counter() - started_at, 0.001)
                 runtime_fps = (preview_frame_index + 1) / elapsed
                 draw_runtime_overlay(latest_primary_render, preview_frame_index, len(fused_people), runtime_fps, "PREVIEW")
+                draw_identity_overlay(latest_primary_render, fused_people)
 
                 packet = build_packet(
                     persons=fused_people,
@@ -586,12 +711,13 @@ def run_final_render(assignments: list[SourceAssignment], config: PipelineConfig
                 frames_by_role[state.assignment.role] = frame
 
             detections_by_role, rendered_by_role = render_detection_group(states, frames_by_role, timestamp_ms)
-            fused_people = fusion.fuse_frame(detections_by_role)
+            fused_people = fusion.fuse_frame(detections_by_role, frame_index=output_frame_index, timestamp_ms=timestamp_ms)
             primary_render = rendered_by_role[assignments[0].role]
 
             elapsed = max(time.perf_counter() - started_at, 0.001)
             runtime_fps = (output_frame_index + 1) / elapsed
             draw_runtime_overlay(primary_render, output_frame_index, len(fused_people), runtime_fps, "FINAL")
+            draw_identity_overlay(primary_render, fused_people)
 
             packet = build_packet(
                 persons=fused_people,
@@ -672,6 +798,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
-
-

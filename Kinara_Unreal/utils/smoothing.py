@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from utils.math_utils import clamp, vector_length, vector_subtract
 
@@ -20,6 +20,7 @@ SECTION_SETTINGS = {
         "max_jump_key": "max_hand_position_jump",
     },
 }
+PASSTHROUGH_KEYS = ("_anchor", "_bbox", "_appearance", "_yolo_track_id", "identity")
 
 
 class LandmarkSmoother:
@@ -52,8 +53,9 @@ class LandmarkSmoother:
                 "left_hand_confidence": person.get("left_hand_confidence"),
                 "right_hand_confidence": person.get("right_hand_confidence"),
             }
-            if "_anchor" in person:
-                smoothed_person["_anchor"] = person["_anchor"]
+            for key in PASSTHROUGH_KEYS:
+                if key in person:
+                    smoothed_person[key] = person[key]
             smoothed_people.append(smoothed_person)
 
         self._prune_tracks()
@@ -146,10 +148,7 @@ class LandmarkSmoother:
             if key not in smoothed:
                 smoothed[key] = value
 
-        state["velocity"] = tuple(
-            smoothed[axis] - float(previous[axis])
-            for axis in ("x", "y", "z")
-        )
+        state["velocity"] = tuple(smoothed[axis] - float(previous[axis]) for axis in ("x", "y", "z"))
         state["value"] = smoothed
         return smoothed
 

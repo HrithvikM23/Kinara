@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
@@ -101,6 +101,14 @@ class CameraCalibration:
     confidence_weight: float = 1.0
 
 
+@dataclass(slots=True)
+class IdentityProfile:
+    slot_id: int
+    label: str
+    color_name: str
+    region: str = "top"
+
+
 def default_camera_calibrations() -> dict[str, CameraCalibration]:
     return {
         PRIMARY_CAMERA_ROLE: CameraCalibration(role=PRIMARY_CAMERA_ROLE),
@@ -178,6 +186,13 @@ class PipelineConfig:
     cluster_match_distance: float = 0.28
     track_match_distance: float = 0.36
     max_track_missed_frames: int = 18
+    enable_identity_memory: bool = False
+    identity_profiles: list[IdentityProfile] = field(default_factory=list)
+    enable_yolo_identity_assist: bool = False
+    yolo_model_name: str = "yolov8x.pt"
+    yolo_person_confidence: float = 0.35
+    enable_mask_rcnn_refinement: bool = False
+    mask_rcnn_score_threshold: float = 0.5
     enable_motion_export: bool = True
     export_json: bool = True
     export_bvh: bool = True

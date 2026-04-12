@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass, field
 
@@ -21,6 +21,9 @@ class Observation:
     right_hand_confidence: float | None
     anchor: dict | None
     confidence: float
+    bbox: dict | None = None
+    appearance: dict | None = None
+    yolo_track_id: int | None = None
 
 
 @dataclass(slots=True)
@@ -38,9 +41,10 @@ class MultiCameraFusion:
         self.tracker = PersonTracker(
             max_match_distance=config.track_match_distance,
             max_missed_frames=config.max_track_missed_frames,
+            identity_profiles=config.identity_profiles,
         )
 
-    def fuse_frame(self, detections_by_role: dict[str, list[dict]]) -> list[dict]:
+    def fuse_frame(self, detections_by_role: dict[str, list[dict]], frame_index: int = 0, timestamp_ms: int = 0) -> list[dict]:
         observations = []
         for role, people in detections_by_role.items():
             observations.extend(self._prepare_observations(role, people))
@@ -52,7 +56,7 @@ class MultiCameraFusion:
             if fused_person is not None:
                 fused_people.append(fused_person)
 
-        tracked_people = self.tracker.update(fused_people)
+        tracked_people = self.tracker.update(fused_people, frame_index=frame_index, timestamp_ms=timestamp_ms)
         smoothed_people = self.smoother.smooth_people(tracked_people)
         for person in smoothed_people:
             person.pop("_anchor", None)
@@ -81,6 +85,9 @@ class MultiCameraFusion:
                     right_hand_confidence=self._optional_float(person.get("right_hand_confidence")),
                     anchor=anchor,
                     confidence=self._body_confidence(transformed_body, role),
+                    bbox=person.get("_bbox"),
+                    appearance=person.get("_appearance"),
+                    yolo_track_id=person.get("_yolo_track_id"),
                 )
             )
         return observations
@@ -120,9 +127,7 @@ class MultiCameraFusion:
 
             best_cluster.observations.append(observation)
             best_cluster.roles.add(observation.role)
-            best_cluster.anchor = average_points(
-                [candidate.anchor for candidate in best_cluster.observations if candidate.anchor is not None]
-            )
+            best_cluster.anchor = average_points([candidate.anchor for candidate in best_cluster.observations if candidate.anchor is not None])
 
         return clusters
 
@@ -139,7 +144,6 @@ class MultiCameraFusion:
             )
             for joint_name in BODY_LANDMARKS
         }
-
         fused_left = {
             joint_name: self._fuse_joint(
                 [
@@ -159,10 +163,8 @@ class MultiCameraFusion:
             for joint_name in HAND_LANDMARKS
         }
 
-        anchor = self._build_anchor(fused_body)
-        if anchor is None:
-            anchor = cluster.anchor
-
+        anchor = self._build_anchor(fused_body) or cluster.anchor
+        identity_observation = self._select_identity_observation(cluster.observations)
         return {
             "id": -1,
             "body": fused_body,
@@ -171,7 +173,18 @@ class MultiCameraFusion:
             "left_hand_confidence": self._average_optional([observation.left_hand_confidence for observation in cluster.observations]),
             "right_hand_confidence": self._average_optional([observation.right_hand_confidence for observation in cluster.observations]),
             "_anchor": anchor,
+            "_bbox": identity_observation.bbox if identity_observation is not None else None,
+            "_appearance": identity_observation.appearance if identity_observation is not None else None,
+            "_yolo_track_id": identity_observation.yolo_track_id if identity_observation is not None else None,
         }
+
+    def _select_identity_observation(self, observations: list[Observation]) -> Observation | None:
+        if not observations:
+            return None
+        for observation in observations:
+            if observation.role == self.primary_role:
+                return observation
+        return max(observations, key=lambda item: item.confidence)
 
     def _candidate(self, observation: Observation, joint, role: str, section_name: str):
         if joint is None:
@@ -288,4 +301,3 @@ class MultiCameraFusion:
         if value is None:
             return None
         return float(value)
-

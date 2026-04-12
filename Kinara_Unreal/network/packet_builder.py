@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 
@@ -92,6 +92,25 @@ def _serialize_rotations(rotations: dict) -> dict:
     return payload
 
 
+def _serialize_identity(identity: dict | None) -> dict | None:
+    if not identity:
+        return None
+    return {
+        "label": identity.get("label"),
+        "profile_slot": identity.get("profile_slot"),
+        "profile_color": identity.get("profile_color"),
+        "profile_region": identity.get("profile_region"),
+        "profile_score": _round_optional(identity.get("profile_score")),
+        "top_color": identity.get("top_color"),
+        "torso_color": identity.get("torso_color"),
+        "yolo_track_id": identity.get("yolo_track_id"),
+        "seen_since_frame": identity.get("seen_since_frame"),
+        "last_seen_frame": identity.get("last_seen_frame"),
+        "seen_since_timestamp_ms": identity.get("seen_since_timestamp_ms"),
+        "last_seen_timestamp_ms": identity.get("last_seen_timestamp_ms"),
+    }
+
+
 def _present(section_map) -> bool:
     return any(value is not None for value in section_map.values())
 
@@ -105,6 +124,7 @@ def build_person_payload(person: dict) -> dict:
 
     return {
         "id": int(person.get("id", 0)),
+        "identity": _serialize_identity(person.get("identity")),
         "body": {
             "present": _present(body_joints),
             "joints": body_joints,
