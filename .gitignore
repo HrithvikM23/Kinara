@@ -16,9 +16,8 @@ venv/
 .mypy_cache/
 .pytest_cache/
 
-# ---------- Logs ---------- 
-*.task 
-
  # ---------- Models ---------- 
 *.pt
 *.pth
+*.task 
+*/models/*
