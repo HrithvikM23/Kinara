@@ -19,6 +19,7 @@ from utils.math_utils import average, distance_2d
 class PoseDetector(BasePoseDetector):
     def __init__(self, config):
         super().__init__(config)
+        self._hand_side_memory: dict[int, dict] = {}
         self.pose_landmarker_image = PoseLandmarker.create_from_options(
             PoseLandmarkerOptions(
                 base_options=python.BaseOptions(model_asset_path=str(POSE_MODEL_PATH)),

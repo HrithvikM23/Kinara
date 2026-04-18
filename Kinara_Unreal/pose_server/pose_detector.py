@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.request import urlretrieve
@@ -57,6 +58,10 @@ HAND_COLORS = {
     "unknown": (180, 180, 180),
 }
 VISIBILITY_THRESHOLD = 0.2
+SHOULDER_VISIBILITY_MIN = 0.5
+WRIST_VISIBILITY_MIN = 0.3
+MEMORY_FLIP_FRAMES = 2   # consecutive frames needed to commit a side flip
+MEMORY_MAX_FRAMES = 60   # cap on stability accumulation
 
 
 def download_model(path: Path, url: str) -> None:
@@ -66,9 +71,43 @@ def download_model(path: Path, url: str) -> None:
         urlretrieve(url, str(path))
 
 
+# ---------------------------------------------------------------------------
+# Hand-side memory entry — stored per hand slot index
+# ---------------------------------------------------------------------------
+class _SideMemory:
+    __slots__ = ("side", "frames", "pending", "pending_count")
+
+    def __init__(self, side: str) -> None:
+        self.side: str = side
+        self.frames: int = 1
+        self.pending: str | None = None
+        self.pending_count: int = 0
+
+    def reinforce(self) -> None:
+        self.frames = min(self.frames + 1, MEMORY_MAX_FRAMES)
+        self.pending = None
+        self.pending_count = 0
+
+    def propose_flip(self, new_side: str) -> bool:
+        """Returns True if the flip should be committed."""
+        if self.pending == new_side:
+            self.pending_count += 1
+        else:
+            self.pending = new_side
+            self.pending_count = 1
+        if self.pending_count >= MEMORY_FLIP_FRAMES:
+            self.side = new_side
+            self.frames = 1
+            self.pending = None
+            self.pending_count = 0
+            return True
+        return False
+
+
 class PoseDetector:
     def __init__(self, config):
         self.config = config
+        self._hand_side_memory: dict[int, _SideMemory] = {}
 
         download_model(POSE_MODEL_PATH, POSE_MODEL_URL)
         download_model(HAND_MODEL_PATH, HAND_MODEL_URL)
@@ -106,6 +145,9 @@ class PoseDetector:
             )
         )
 
+    # ------------------------------------------------------------------
+    # Public entry point
+    # ------------------------------------------------------------------
 
     def detect(self, frame, timestamp_ms: int):
         rgb_frame = np.ascontiguousarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
@@ -120,6 +162,10 @@ class PoseDetector:
 
         people = self._combine_results(pose_result, hand_result)
         return people, rendered
+
+    # ------------------------------------------------------------------
+    # Hand detection routing
+    # ------------------------------------------------------------------
 
     def _detect_hands(self, rgb_frame, full_mp_image, pose_result, timestamp_ms: int):
         if not self.config.enable_hand_roi:
@@ -142,7 +188,9 @@ class PoseDetector:
                 continue
 
             roi_results.append(
-                self._map_roi_detection(selected, x0, y0, x1 - x0, y1 - y0, frame_width, frame_height)
+                self._map_roi_detection(
+                    selected, x0, y0, x1 - x0, y1 - y0, frame_width, frame_height
+                )
             )
 
         expected_count = len(roi_records)
@@ -155,6 +203,10 @@ class PoseDetector:
 
         return self._build_hand_result(roi_results)
 
+    # ------------------------------------------------------------------
+    # ROI helpers
+    # ------------------------------------------------------------------
+
     def _build_hand_rois(self, pose_result, frame_width: int, frame_height: int):
         rois = []
         for pose_image in list(pose_result.pose_landmarks or [])[: self.config.max_persons]:
@@ -165,35 +217,31 @@ class PoseDetector:
         return rois
 
     def _build_hand_roi_for_side(self, pose_image, side: str, frame_width: int, frame_height: int):
-        if side == "left":
-            wrist_index = LEFT_WRIST_INDEX
-            elbow_index = LEFT_ELBOW_INDEX
-            shoulder_index = LEFT_SHOULDER_INDEX
-        else:
-            wrist_index = RIGHT_WRIST_INDEX
-            elbow_index = RIGHT_ELBOW_INDEX
-            shoulder_index = RIGHT_SHOULDER_INDEX
+        wrist_index = LEFT_WRIST_INDEX if side == "left" else RIGHT_WRIST_INDEX
+        elbow_index = LEFT_ELBOW_INDEX if side == "left" else RIGHT_ELBOW_INDEX
+        shoulder_index = LEFT_SHOULDER_INDEX if side == "left" else RIGHT_SHOULDER_INDEX
 
         wrist = self._safe_pose_landmark(pose_image, wrist_index)
         if wrist is None:
             return None
-
-        wrist_visibility = float(getattr(wrist, "visibility", 1.0))
-        if wrist_visibility < VISIBILITY_THRESHOLD:
+        if float(getattr(wrist, "visibility", 1.0)) < VISIBILITY_THRESHOLD:
             return None
 
         elbow = self._safe_pose_landmark(pose_image, elbow_index)
         shoulder = self._safe_pose_landmark(pose_image, shoulder_index)
 
         wrist_px = self._landmark_to_pixel(wrist, frame_width, frame_height)
-        elbow_px = self._landmark_to_pixel(elbow, frame_width, frame_height) if elbow is not None else None
-        shoulder_px = self._landmark_to_pixel(shoulder, frame_width, frame_height) if shoulder is not None else None
+        elbow_px = self._landmark_to_pixel(elbow, frame_width, frame_height) if elbow else None
+        shoulder_px = self._landmark_to_pixel(shoulder, frame_width, frame_height) if shoulder else None
 
         roi_size = float(self.config.hand_roi_min_size)
         if elbow_px is not None:
             roi_size = max(roi_size, distance_2d(wrist_px, elbow_px) * self.config.hand_roi_scale)
         if shoulder_px is not None:
-            roi_size = max(roi_size, distance_2d(wrist_px, shoulder_px) * (self.config.hand_roi_scale * 0.7))
+            roi_size = max(
+                roi_size,
+                distance_2d(wrist_px, shoulder_px) * (self.config.hand_roi_scale * 0.7),
+            )
 
         center_x = wrist_px["x"]
         center_y = wrist_px["y"]
@@ -215,78 +263,214 @@ class PoseDetector:
 
         return {"side": side, "bounds": (x0, y0, x1, y1)}
 
-    def _safe_pose_landmark(self, pose_image, index: int):
-        if pose_image is None or index >= len(pose_image):
+    # ------------------------------------------------------------------
+    # Hand-side resolution  (geometry → mp label → memory)
+    # ------------------------------------------------------------------
+
+    def _geometry_side(self, hand_image, people) -> str | None:
+        """
+        Determine hand side purely from landmark geometry.
+
+        Strategy (in priority order):
+        1. Compare hand wrist x against both pose wrist x positions — closest wins.
+           Both pose wrists must have acceptable visibility.
+        2. If only one pose wrist is visible, check which half of the torso the
+           hand falls in relative to the shoulder midpoint.
+        3. Return None if shoulders aren't visible enough to be trusted.
+
+        All coordinates are in normalised image space [0,1] so no mirroring is
+        needed — MediaPipe pose and hand landmarks share the same coordinate frame.
+        """
+        if not hand_image or not people:
             return None
-        return pose_image[index]
 
-    def _landmark_to_pixel(self, landmark, frame_width: int, frame_height: int):
-        return {
-            "x": float(landmark.x) * frame_width,
-            "y": float(landmark.y) * frame_height,
-        }
+        hand_x = float(hand_image[0].x)
 
-    def _select_roi_detection(self, roi_result, expected_side: str):
-        hand_images = list(roi_result.hand_landmarks or [])
-        handedness_sets = list(roi_result.handedness or [])
-        if not hand_images:
+        # pick the person whose shoulder centre is horizontally closest to the hand
+        best_person = None
+        best_dist = float("inf")
+        for person in people:
+            pose_image = person.get("_pose_image")
+            if pose_image is None:
+                continue
+            ls = self._safe_pose_landmark(pose_image, LEFT_SHOULDER_INDEX)
+            rs = self._safe_pose_landmark(pose_image, RIGHT_SHOULDER_INDEX)
+            if ls is None or rs is None:
+                continue
+            ls_vis = float(getattr(ls, "visibility", 0.0))
+            rs_vis = float(getattr(rs, "visibility", 0.0))
+            if ls_vis < SHOULDER_VISIBILITY_MIN or rs_vis < SHOULDER_VISIBILITY_MIN:
+                continue
+            mid_x = (float(ls.x) + float(rs.x)) / 2.0
+            dist = abs(mid_x - hand_x)
+            if dist < best_dist:
+                best_dist = dist
+                best_person = person
+
+        if best_person is None:
             return None
 
-        matches = []
+        pose_image = best_person["_pose_image"]
+        ls = self._safe_pose_landmark(pose_image, LEFT_SHOULDER_INDEX)
+        rs = self._safe_pose_landmark(pose_image, RIGHT_SHOULDER_INDEX)
+        lw = self._safe_pose_landmark(pose_image, LEFT_WRIST_INDEX)
+        rw = self._safe_pose_landmark(pose_image, RIGHT_WRIST_INDEX)
+
+        lw_vis = float(getattr(lw, "visibility", 0.0)) if lw else 0.0
+        rw_vis = float(getattr(rw, "visibility", 0.0)) if rw else 0.0
+
+        # --- strategy 1: both pose wrists visible → nearest pose wrist wins ----
+        if lw_vis >= WRIST_VISIBILITY_MIN and rw_vis >= WRIST_VISIBILITY_MIN:
+            dist_left = abs(hand_x - float(lw.x))   # type: ignore[union-attr]
+            dist_right = abs(hand_x - float(rw.x))  # type: ignore[union-attr]
+            return "left" if dist_left < dist_right else "right"
+
+        # --- strategy 2: one pose wrist visible → use it as anchor -------------
+        if lw_vis >= WRIST_VISIBILITY_MIN and lw is not None:
+            # we know where left wrist is; if hand is close to it → left
+            mid_x = (float(ls.x) + float(rs.x)) / 2.0  # type: ignore[union-attr]
+            dist_to_left_wrist = abs(hand_x - float(lw.x))
+            dist_to_mid = abs(hand_x - mid_x)
+            return "left" if dist_to_left_wrist < dist_to_mid else "right"
+
+        if rw_vis >= WRIST_VISIBILITY_MIN and rw is not None:
+            mid_x = (float(ls.x) + float(rs.x)) / 2.0  # type: ignore[union-attr]
+            dist_to_right_wrist = abs(hand_x - float(rw.x))
+            dist_to_mid = abs(hand_x - mid_x)
+            return "right" if dist_to_right_wrist < dist_to_mid else "left"
+
+        # --- strategy 3: no reliable wrist → shoulder midpoint split -----------
+        # In MediaPipe normalised coords (subject facing camera):
+        #   subject's LEFT hand  → larger x  (right side of frame)
+        #   subject's RIGHT hand → smaller x (left side of frame)
+        mid_x = (float(ls.x) + float(rs.x)) / 2.0  # type: ignore[union-attr]
+        return "left" if hand_x > mid_x else "right"
+
+    def _resolve_side(
+        self,
+        hand_slot: int,
+        mp_label: str | None,
+        mp_score: float | None,
+        geo_side: str | None,
+    ) -> str:
+        """
+        Final side decision for one detected hand.
+
+        Priority:
+          1. Geometry (when available) — override everything, update memory.
+          2. Weighted vote: mp_label (scaled by mp_score) + memory stability bonus.
+          3. Flip protection: require MEMORY_FLIP_FRAMES consecutive frames of the
+             new side before committing, to avoid single-frame hallucinations.
+        """
+        mem = self._hand_side_memory.get(hand_slot)
+
+        # ---- geometry is available: trust it directly ----------------------
+        if geo_side is not None:
+            if mem is None:
+                self._hand_side_memory[hand_slot] = _SideMemory(geo_side)
+            elif mem.side == geo_side:
+                mem.reinforce()
+            else:
+                mem.propose_flip(geo_side)
+            # always return geometry result immediately
+            return geo_side
+
+        # ---- geometry unavailable: vote ------------------------------------
+        votes: dict[str, float] = {"left": 0.0, "right": 0.0}
+
+        if mp_label in ("left", "right"):
+            votes[mp_label] += float(mp_score or 0.5)
+
+        if mem is not None:
+            stability = min(mem.frames / 10.0, 1.5)
+            votes[mem.side] += stability
+
+        resolved = "left" if votes["left"] >= votes["right"] else "right"
+
+        if mem is None:
+            self._hand_side_memory[hand_slot] = _SideMemory(resolved)
+            return resolved
+
+        if mem.side == resolved:
+            mem.reinforce()
+            return resolved
+
+        # proposed flip — only commit after enough consecutive frames
+        mem.propose_flip(resolved)
+        return mem.side  # return stable side until flip commits
+
+    def _deduplicate_sides(self, candidates: list[dict]) -> list[dict]:
+        """
+        If two hands end up claiming the same side, keep the higher-confidence
+        one and flip the other to the opposite side, clearing its memory.
+        """
+        side_map: dict[str, list[dict]] = defaultdict(list)
+        for c in candidates:
+            side_map[c["side"]].append(c)
+
+        resolved: list[dict] = []
+        for side, group in side_map.items():
+            if len(group) == 1:
+                resolved.append(group[0])
+                continue
+            group.sort(key=lambda c: c["mp_score"], reverse=True)
+            resolved.append(group[0])
+            opposite = "right" if side == "left" else "left"
+            for loser in group[1:]:
+                loser["side"] = opposite
+                self._hand_side_memory.pop(loser["hand_index"], None)
+                resolved.append(loser)
+
+        return resolved
+
+    # ------------------------------------------------------------------
+    # Attaching hands to people
+    # ------------------------------------------------------------------
+
+    def _attach_hands(self, people, hand_result) -> None:
+        hand_images = list(hand_result.hand_landmarks or [])
+        hand_worlds = list(hand_result.hand_world_landmarks or [])
+        handedness_sets = list(hand_result.handedness or [])
+
+        candidates: list[dict] = []
         for hand_index, hand_image in enumerate(hand_images):
-            label, score = self._get_handedness(handedness_sets, hand_index)
-            quality = float(score) if score is not None else 0.0
-            if label == expected_side:
-                quality += 1.0
-            matches.append((quality, hand_index, hand_image, handedness_sets[hand_index] if hand_index < len(handedness_sets) else []))
-
-        _, _, hand_image, handedness = max(matches, key=lambda item: item[0])
-        return {"hand_image": hand_image, "handedness": handedness}
-
-    def _map_roi_detection(self, selected, x0: int, y0: int, roi_width: int, roi_height: int, frame_width: int, frame_height: int):
-        mapped_hand = []
-        for landmark in selected["hand_image"]:
-            mapped_hand.append(
-                SimpleNamespace(
-                    x=(x0 + float(landmark.x) * roi_width) / frame_width,
-                    y=(y0 + float(landmark.y) * roi_height) / frame_height,
-                    z=float(landmark.z),
-                )
+            hand_world = hand_worlds[hand_index] if hand_index < len(hand_worlds) else None
+            mp_label, mp_score = self._get_handedness(handedness_sets, hand_index)
+            geo_side = self._geometry_side(hand_image, people)
+            side = self._resolve_side(hand_index, mp_label, mp_score, geo_side)
+            candidates.append(
+                {
+                    "hand_index": hand_index,
+                    "hand_image": hand_image,
+                    "hand_world": hand_world,
+                    "side": side,
+                    "mp_score": mp_score or 0.0,
+                }
             )
 
-        return {
-            "hand_landmarks": mapped_hand,
-            "hand_world_landmarks": None,
-            "handedness": list(selected["handedness"]),
-        }
+        candidates = self._deduplicate_sides(candidates)
 
-    def _build_hand_result(self, hand_entries):
-        return SimpleNamespace(
-            hand_landmarks=[entry["hand_landmarks"] for entry in hand_entries],
-            hand_world_landmarks=[entry["hand_world_landmarks"] for entry in hand_entries],
-            handedness=[entry["handedness"] for entry in hand_entries],
-        )
+        for candidate in candidates:
+            hand_image = candidate["hand_image"]
+            hand_world = candidate["hand_world"]
+            side_key = f"{candidate['side']}_hand"
+            distance_key = "_left_distance" if candidate["side"] == "left" else "_right_distance"
 
-    def _merge_hand_results(self, roi_result, full_result):
-        merged_entries = []
+            match = self._match_hand_to_person(people, hand_image, candidate["side"])
+            if match is None:
+                continue
 
-        for result in (roi_result, full_result):
-            hand_images = list(result.hand_landmarks or [])
-            hand_worlds = list(result.hand_world_landmarks or [])
-            handedness_sets = list(result.handedness or [])
+            person_index, _, score = match
+            if score >= people[person_index][distance_key]:
+                continue
 
-            for hand_index, hand_landmarks in enumerate(hand_images):
-                hand_world_landmarks = hand_worlds[hand_index] if hand_index < len(hand_worlds) else None
-                handedness = handedness_sets[hand_index] if hand_index < len(handedness_sets) else []
-                merged_entries.append(
-                    {
-                        "hand_landmarks": hand_landmarks,
-                        "hand_world_landmarks": hand_world_landmarks,
-                        "handedness": handedness,
-                    }
-                )
+            people[person_index][side_key] = self._extract_hand(hand_world, hand_image)
+            people[person_index][f"{side_key}_confidence"] = candidate["mp_score"]
+            people[person_index][distance_key] = score
 
-        return self._build_hand_result(merged_entries)
+    # ------------------------------------------------------------------
+    # Person / result assembly
+    # ------------------------------------------------------------------
 
     def _combine_results(self, pose_result, hand_result):
         pose_images = list(pose_result.pose_landmarks or [])
@@ -329,6 +513,10 @@ class PoseDetector:
             for person in people
         ]
 
+    # ------------------------------------------------------------------
+    # Landmark extraction
+    # ------------------------------------------------------------------
+
     def _extract_body(self, pose_world, pose_image):
         body = {}
         for name, index in BODY_INDEX_BY_NAME.items():
@@ -366,107 +554,158 @@ class PoseDetector:
             }
         return hand
 
-    def _attach_hands(self, people, hand_result) -> None:
-        hand_images = list(hand_result.hand_landmarks or [])
-        hand_worlds = list(hand_result.hand_world_landmarks or [])
-        handedness_sets = list(hand_result.handedness or [])
+    # ------------------------------------------------------------------
+    # Hand matching
+    # ------------------------------------------------------------------
 
-        for hand_index, hand_image in enumerate(hand_images):
-            hand_world = hand_worlds[hand_index] if hand_index < len(hand_worlds) else None
-            handedness_label, handedness_score = self._get_handedness(handedness_sets, hand_index)
-            match = self._match_hand_to_person(people, hand_image, handedness_label)
-            if match is None:
-                continue
-
-            person_index, side_key, score = match
-            distance_key = "_left_distance" if side_key == "left_hand" else "_right_distance"
-            if score >= people[person_index][distance_key]:
-                continue
-
-            people[person_index][side_key] = self._extract_hand(hand_world, hand_image)
-            people[person_index][f"{side_key}_confidence"] = handedness_score
-            people[person_index][distance_key] = score
-
-    def _match_hand_to_person(self, people, hand_image, handedness_label):
+    def _match_hand_to_person(self, people, hand_image, side: str):
         if not hand_image:
             return None
 
         hand_wrist = {"x": float(hand_image[0].x), "y": float(hand_image[0].y)}
-        candidates = []
-
-        preferred_side = None
-        if handedness_label in {"left", "right"}:
-            preferred_side = f"{handedness_label}_hand"
+        side_key = f"{side}_hand"
+        best: tuple | None = None
 
         for person_index, person in enumerate(people):
-            if preferred_side is None:
-                for side_key in ("left_hand", "right_hand"):
-                    score = self._score_hand_for_person(person, hand_wrist, side_key)
-                    candidates.append((score, person_index, side_key))
-            else:
-                score = self._score_hand_for_person(person, hand_wrist, preferred_side)
-                candidates.append((score, person_index, preferred_side))
+            score = self._score_hand_for_person(person, hand_wrist, side_key)
+            if best is None or score < best[0]:
+                best = (score, person_index, side_key)
 
-        if not candidates:
+        if best is None or best[0] == float("inf"):
             return None
-
-        score, person_index, side_key = min(candidates, key=lambda item: item[0])
-        if score == float("inf"):
-            return None
-        return person_index, side_key, score
+        return best[1], best[2], best[0]
 
     def _score_hand_for_person(self, person, hand_wrist, side_key: str) -> float:
-        reference_landmark = self._best_body_reference(person["_pose_image"], side_key)
-        if reference_landmark is None:
+        ref = self._best_body_reference(person["_pose_image"], side_key)
+        if ref is None:
             return float("inf")
-
-        body_point = {"x": float(reference_landmark.x), "y": float(reference_landmark.y)}
-        return distance_2d(hand_wrist, body_point)
+        return distance_2d(hand_wrist, {"x": float(ref.x), "y": float(ref.y)})
 
     def _best_body_reference(self, pose_image, side_key: str):
-        if side_key == "left_hand":
-            candidates = (LEFT_WRIST_INDEX, LEFT_SHOULDER_INDEX, LEFT_HIP_INDEX)
-        else:
-            candidates = (RIGHT_WRIST_INDEX, RIGHT_SHOULDER_INDEX, RIGHT_HIP_INDEX)
-
+        candidates = (
+            (LEFT_WRIST_INDEX, LEFT_SHOULDER_INDEX, LEFT_HIP_INDEX)
+            if side_key == "left_hand"
+            else (RIGHT_WRIST_INDEX, RIGHT_SHOULDER_INDEX, RIGHT_HIP_INDEX)
+        )
         for index in candidates:
             if index >= len(pose_image):
                 continue
-            landmark = pose_image[index]
-            if getattr(landmark, "visibility", 1.0) >= 0.25:
-                return landmark
-
+            lm = pose_image[index]
+            if getattr(lm, "visibility", 1.0) >= 0.25:
+                return lm
         for index in candidates:
             if index < len(pose_image):
                 return pose_image[index]
         return None
 
+    # ------------------------------------------------------------------
+    # ROI result helpers
+    # ------------------------------------------------------------------
+
+    def _select_roi_detection(self, roi_result, expected_side: str):
+        hand_images = list(roi_result.hand_landmarks or [])
+        handedness_sets = list(roi_result.handedness or [])
+        if not hand_images:
+            return None
+
+        matches = []
+        for hand_index, hand_image in enumerate(hand_images):
+            label, score = self._get_handedness(handedness_sets, hand_index)
+            quality = float(score) if score is not None else 0.0
+            if label == expected_side:
+                quality += 1.0
+            hs = handedness_sets[hand_index] if hand_index < len(handedness_sets) else []
+            matches.append((quality, hand_index, hand_image, hs))
+
+        _, _, hand_image, handedness = max(matches, key=lambda item: item[0])
+        return {"hand_image": hand_image, "handedness": handedness}
+
+    def _map_roi_detection(
+        self,
+        selected,
+        x0: int,
+        y0: int,
+        roi_width: int,
+        roi_height: int,
+        frame_width: int,
+        frame_height: int,
+    ):
+        mapped_hand = [
+            SimpleNamespace(
+                x=(x0 + float(lm.x) * roi_width) / frame_width,
+                y=(y0 + float(lm.y) * roi_height) / frame_height,
+                z=float(lm.z),
+            )
+            for lm in selected["hand_image"]
+        ]
+        return {
+            "hand_landmarks": mapped_hand,
+            "hand_world_landmarks": None,
+            "handedness": list(selected["handedness"]),
+        }
+
+    def _build_hand_result(self, hand_entries):
+        return SimpleNamespace(
+            hand_landmarks=[e["hand_landmarks"] for e in hand_entries],
+            hand_world_landmarks=[e["hand_world_landmarks"] for e in hand_entries],
+            handedness=[e["handedness"] for e in hand_entries],
+        )
+
+    def _merge_hand_results(self, roi_result, full_result):
+        merged: list[dict] = []
+        for result in (roi_result, full_result):
+            hand_images = list(result.hand_landmarks or [])
+            hand_worlds = list(result.hand_world_landmarks or [])
+            handedness_sets = list(result.handedness or [])
+            for i, hand_landmarks in enumerate(hand_images):
+                merged.append(
+                    {
+                        "hand_landmarks": hand_landmarks,
+                        "hand_world_landmarks": hand_worlds[i] if i < len(hand_worlds) else None,
+                        "handedness": handedness_sets[i] if i < len(handedness_sets) else [],
+                    }
+                )
+        return self._build_hand_result(merged)
+
+    # ------------------------------------------------------------------
+    # Misc helpers
+    # ------------------------------------------------------------------
+
     def _get_handedness(self, handedness_sets, hand_index: int):
         if hand_index >= len(handedness_sets) or not handedness_sets[hand_index]:
             return None, None
-
         category = handedness_sets[hand_index][0]
         label = (getattr(category, "category_name", "") or "").strip().lower()
         if label not in {"left", "right"}:
             label = None
-
         score = getattr(category, "score", None)
         return label, float(score) if score is not None else None
 
+    def _safe_pose_landmark(self, pose_image, index: int):
+        if pose_image is None or index >= len(pose_image):
+            return None
+        return pose_image[index]
+
+    def _landmark_to_pixel(self, landmark, frame_width: int, frame_height: int):
+        return {
+            "x": float(landmark.x) * frame_width,
+            "y": float(landmark.y) * frame_height,
+        }
+
     def _pose_sort_key(self, pose_image) -> float:
-        x_values = []
-        for index in (
-            LEFT_SHOULDER_INDEX,
-            RIGHT_SHOULDER_INDEX,
-            LEFT_HIP_INDEX,
-            RIGHT_HIP_INDEX,
-        ):
-            if index < len(pose_image):
-                x_values.append(float(pose_image[index].x))
+        x_values = [
+            float(pose_image[i].x)
+            for i in (LEFT_SHOULDER_INDEX, RIGHT_SHOULDER_INDEX, LEFT_HIP_INDEX, RIGHT_HIP_INDEX)
+            if i < len(pose_image)
+        ]
         return average(x_values)
 
     def _empty_joint_map(self, joint_index_map):
-        return {joint_name: None for joint_name in joint_index_map}
+        return {name: None for name in joint_index_map}
+
+    # ------------------------------------------------------------------
+    # Drawing
+    # ------------------------------------------------------------------
 
     def _draw_results(self, frame, pose_result, hand_result) -> None:
         for index, pose_landmarks in enumerate(list(pose_result.pose_landmarks or [])):
@@ -482,12 +721,11 @@ class PoseDetector:
             self._draw_landmarks(frame, hand_landmarks, HAND_CONNECTIONS, color, start_index=0)
 
             wrist = hand_landmarks[0]
-            height, width = frame.shape[:2]
-            text_position = (int(wrist.x * width), int(wrist.y * height) - 10)
+            h, w = frame.shape[:2]
             cv2.putText(
                 frame,
                 (label or "hand").upper(),
-                text_position,
+                (int(wrist.x * w), int(wrist.y * h) - 10),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.45,
                 color,
@@ -496,32 +734,29 @@ class PoseDetector:
             )
 
     def _draw_landmarks(self, frame, landmarks, connections, color, start_index: int) -> None:
-        height, width = frame.shape[:2]
+        h, w = frame.shape[:2]
 
-        for start_index_raw, end_index_raw in connections:
-            if start_index_raw >= len(landmarks) or end_index_raw >= len(landmarks):
+        for s, e in connections:
+            if s >= len(landmarks) or e >= len(landmarks):
                 continue
-
-            point_a = (
-                int(landmarks[start_index_raw].x * width),
-                int(landmarks[start_index_raw].y * height),
+            cv2.line(
+                frame,
+                (int(landmarks[s].x * w), int(landmarks[s].y * h)),
+                (int(landmarks[e].x * w), int(landmarks[e].y * h)),
+                color,
+                2,
             )
-            point_b = (
-                int(landmarks[end_index_raw].x * width),
-                int(landmarks[end_index_raw].y * height),
-            )
-            cv2.line(frame, point_a, point_b, color, 2)
 
-        for landmark_index in range(start_index, len(landmarks)):
-            landmark = landmarks[landmark_index]
-            point = (int(landmark.x * width), int(landmark.y * height))
-            cv2.circle(frame, point, 3, color, -1)
+        for i in range(start_index, len(landmarks)):
+            lm = landmarks[i]
+            cv2.circle(frame, (int(lm.x * w), int(lm.y * h)), 3, color, -1)
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
 
     def close(self) -> None:
         self.pose_landmarker.close()
         self.hand_landmarker.close()
         self.hand_landmarker_roi.close()
-
-
-
-
+        self._hand_side_memory.clear()

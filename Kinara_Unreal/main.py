@@ -1,14 +1,12 @@
 from __future__ import annotations
-
 import argparse
+from email import parser
 import sys
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
-
 import cv2
-
 from camera.video_input import choose_video
 from config import (
     IdentityProfile,
@@ -75,11 +73,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-json-export", action="store_true", help="Disable fused motion JSON export")
     parser.add_argument("--no-bvh-export", action="store_true", help="Disable BVH animation export")
     parser.add_argument("--no-fbx-export", action="store_true", help="Disable FBX animation export")
-    parser.add_argument("--no-yolo", action="store_true", help="Disable YOLO person assist during final render")
-    parser.add_argument("--yolo-model", help="YOLO model name or local path for final render assist")
-    parser.add_argument("--yolo-confidence", type=float, help="Minimum YOLO person confidence")
-    parser.add_argument("--no-mask-rcnn", action="store_true", help="Disable Mask R-CNN refinement during final render")
-    parser.add_argument("--mask-rcnn-score", type=float, help="Minimum Mask R-CNN person score")
     parser.add_argument("--no-identity-memory", action="store_true", help="Disable color-based identity memory")
     parser.add_argument("--body-detection-confidence", type=float, help="Minimum MediaPipe body detection confidence")
     parser.add_argument("--body-presence-confidence", type=float, help="Minimum MediaPipe body presence confidence")
@@ -87,9 +80,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hand-detection-confidence", type=float, help="Minimum MediaPipe hand detection confidence")
     parser.add_argument("--hand-presence-confidence", type=float, help="Minimum MediaPipe hand presence confidence")
     parser.add_argument("--hand-tracking-confidence", type=float, help="Minimum MediaPipe hand tracking confidence")
-    parser.add_argument("--rcnn-confidence", type=float, help="Alias for minimum Mask R-CNN person score")
+    parser.add_argument("--enable-yolo", nargs="?", const="yolov8x.pt", metavar="MODEL",
+        help="Enable YOLO person assist during final render. "
+             "Optionally pass a model name or path (default: yolov8x.pt). "
+             "Example: --enable-yolo yolov8n.pt")
+    parser.add_argument("--yolo-confidence", type=float, help="Minimum YOLO person confidence")
+    parser.add_argument("--enable-rcnn", action="store_true",
+        help="Enable Mask R-CNN refinement during final render (requires --enable-yolo)")
+    parser.add_argument("--mask-rcnn-score", type=float, help="Minimum Mask R-CNN person score")
+    parser.add_argument("--rcnn-confidence", type=float, help="Alias for --mask-rcnn-score")
     return parser.parse_args()
-
 
 def prompt_int(prompt: str, minimum: int, default: int, maximum: int | None = None) -> int:
     while True:
@@ -304,12 +304,17 @@ def build_config(args: argparse.Namespace) -> PipelineConfig:
         config.preview_target_fps = args.preview_fps
     config.enable_identity_memory = max_persons > 1 and not args.no_identity_memory
     config.identity_profiles = prompt_identity_profiles(max_persons) if config.enable_identity_memory else []
-    config.enable_yolo_identity_assist = max_persons > 1 and not args.no_yolo
-    if args.yolo_model:
-        config.yolo_model_name = args.yolo_model
+
+     # YOLO: only active when explicitly requested AND tracking >1 person
+    yolo_requested = args.enable_yolo is not None   # None means flag was absent entirely
+    config.enable_yolo_identity_assist = max_persons > 1 and yolo_requested
+    if config.enable_yolo_identity_assist:
+        config.yolo_model_name = args.enable_yolo   # already defaults to "yolov8x.pt" via const=
     if args.yolo_confidence is not None and args.yolo_confidence > 0:
         config.yolo_person_confidence = args.yolo_confidence
-    config.enable_mask_rcnn_refinement = config.enable_yolo_identity_assist and not args.no_mask_rcnn
+
+    # RCNN: only active when YOLO is also active AND explicitly requested
+    config.enable_mask_rcnn_refinement = config.enable_yolo_identity_assist and args.enable_rcnn
     if args.mask_rcnn_score is not None and args.mask_rcnn_score > 0:
         config.mask_rcnn_score_threshold = args.mask_rcnn_score
     if args.rcnn_confidence is not None and args.rcnn_confidence > 0:
