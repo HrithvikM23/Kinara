@@ -31,10 +31,14 @@ MEDIAPIPE CONFIDENCE
 
 YOLO
 ----
---no-yolo                 Flag. No value required.
-                          Automatically disabled when max-persons is 1.
+--enable-yolo             Optional MODEL argument. Enables YOLO person assist during the
+                          final render pass. YOLO is OFF by default.
+                          Automatically stays disabled when max-persons is 1.
 
---yolo-model              Model name or local file path. Default: yolov8x.pt
+                          Usage:
+                            --enable-yolo                  (uses yolov8x.pt by default)
+                            --enable-yolo yolov8n.pt       (specify a lighter model)
+                            --enable-yolo path/to/model.pt (local model path)
 
                           yolov8n.pt   Nano    — fastest, least accurate, low VRAM
                           yolov8s.pt   Small   — faster, moderate accuracy
@@ -43,19 +47,14 @@ YOLO
                           yolov8x.pt   XLarge  — most accurate, highest VRAM (default)
 
 --yolo-confidence         Float, 0.0 – 1.0. Default: 0.35
-                          Lower = detects more people but more false positives.
-                          Higher = stricter, may miss partially visible people.
 
 MASK R-CNN
 ----------
---no-mask-rcnn            Flag. No value required. Requires YOLO to be active.
+--enable-rcnn             Flag. Enables Mask R-CNN refinement. OFF by default.
+                          Has no effect unless --enable-yolo is also passed.
+
 --mask-rcnn-score         Float, 0.0 – 1.0. Default: 0.5
 --rcnn-confidence         Alias for --mask-rcnn-score.
-
-IDENTITY MEMORY
----------------
---no-identity-memory      Flag. No value required.
-                          Automatically disabled when max-persons is 1.
 
 OUTPUT CONTROL
 --------------
