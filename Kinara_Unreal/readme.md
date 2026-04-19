@@ -1,4 +1,4 @@
-# HMT3A Unreal Client Pipeline
+# Kinara Unreal Client Pipeline
 
 Client-side motion pipeline that prepares fused tracking data for downstream animation systems.
 
@@ -36,6 +36,7 @@ Client-side motion pipeline that prepares fused tracking data for downstream ani
 - Configurable color memory such as `Person 1 = orange top`
 - Identity timestamps including `seen_since` and `last_seen`
 - CLI-adjustable confidence values for body, hand, YOLO, and Mask R-CNN
+- GPU acceleration for YOLO and Mask R-CNN when the local PyTorch runtime has CUDA support
 
 ---
 
@@ -46,6 +47,10 @@ python main.py
 ```
 
 All options including source, FPS cap, resolution, export formats, confidence thresholds, YOLO model, identity memory, and calibration file can be set via CLI arguments. See **ARGS.md** for the full reference.
+
+At startup the app prints an acceleration summary showing the preferred backend, active YOLO device, active Torch device, NVIDIA GPU name, CUDA runtime, cuDNN availability, and cuDNN version when detected.
+
+Use `--cpu-only` to force CPU backends.
 
 ---
 
@@ -62,6 +67,8 @@ Full pipeline with final-render identity assist:
 ```bash
 pip install ultralytics torch torchvision
 ```
+
+YOLO and Mask R-CNN use PyTorch, so CUDA and cuDNN are used through PyTorch when available. MediaPipe uses its own GPU delegate when supported and otherwise falls back to CPU.
 
 ---
 
