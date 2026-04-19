@@ -78,19 +78,30 @@ def _joint_position(skeleton: dict, joint_name: str):
 
 
 def _average_direction(vectors):
-    vectors = [normalize(vector) for vector in vectors if vector is not None and vector_length(vector) > 0.0]
-    if not vectors:
+    normalized_vectors = []
+    for vector in vectors:
+        if vector is None or vector_length(vector) <= 0.0:
+            continue
+        normalized = normalize(vector)
+        if normalized is not None:
+            normalized_vectors.append(normalized)
+
+    if not normalized_vectors:
         return None
     return normalize(
         (
-            average(vector[0] for vector in vectors),
-            average(vector[1] for vector in vectors),
-            average(vector[2] for vector in vectors),
+            average(vector[0] for vector in normalized_vectors),
+            average(vector[1] for vector in normalized_vectors),
+            average(vector[2] for vector in normalized_vectors),
         )
     )
 
 
 def _vector_for_joint(skeleton: dict, joint_name: str):
+    joint = skeleton.get("joints", {}).get(joint_name)
+    if joint is None:
+        return None
+
     position = _joint_position(skeleton, joint_name)
     if position is None:
         return None
@@ -106,13 +117,13 @@ def _vector_for_joint(skeleton: dict, joint_name: str):
         if child_position is not None:
             return normalize(vector_between(position, child_position))
 
-    children = skeleton["joints"][joint_name].get("children", [])
+    children = joint.get("children", [])
     child_vectors = [vector_between(position, _joint_position(skeleton, child_name)) for child_name in children]
     forward = _average_direction(child_vectors)
     if forward is not None:
         return forward
 
-    parent_name = skeleton["joints"][joint_name].get("parent")
+    parent_name = joint.get("parent")
     if parent_name is not None:
         parent_position = _joint_position(skeleton, parent_name)
         if parent_position is not None:
@@ -181,6 +192,10 @@ def build_joint_rotations(skeleton: dict) -> dict:
     rotations = {}
 
     for joint_name, joint in skeleton.get("joints", {}).items():
+        if joint is None:
+            rotations[joint_name] = None
+            continue
+
         position = joint.get("position")
         if position is None:
             rotations[joint_name] = None
@@ -198,10 +213,17 @@ def build_joint_rotations(skeleton: dict) -> dict:
         if parent_name is not None:
             parent_rotation = rotations.get(parent_name)
 
-        if parent_rotation is None:
+        parent_global_quaternion = None
+        if isinstance(parent_rotation, dict):
+            parent_global_quaternion = parent_rotation.get("global_quaternion")
+
+        if parent_global_quaternion is None:
             local_quaternion = global_quaternion
         else:
-            local_quaternion = quaternion_multiply(quaternion_inverse(tuple(parent_rotation["global_quaternion"])), global_quaternion)
+            local_quaternion = quaternion_multiply(
+                quaternion_inverse(tuple(parent_global_quaternion)),
+                global_quaternion,
+            )
 
         rotations[joint_name] = {
             "parent": parent_name,

@@ -1,45 +1,22 @@
 ﻿from __future__ import annotations
-
 from types import SimpleNamespace
-
 import cv2
 import mediapipe as mp
 import numpy as np
-from mediapipe.tasks import python
-from mediapipe.tasks.python.vision import HandLandmarker, HandLandmarkerOptions, PoseLandmarker, PoseLandmarkerOptions, RunningMode
-
-from config import HAND_INDEX_BY_NAME, HAND_MODEL_PATH, LEFT_ELBOW_INDEX, LEFT_HIP_INDEX, LEFT_SHOULDER_INDEX, LEFT_WRIST_INDEX, POSE_MODEL_PATH, RIGHT_ELBOW_INDEX, RIGHT_HIP_INDEX, RIGHT_SHOULDER_INDEX, RIGHT_WRIST_INDEX
+from mediapipe.tasks.python.vision import RunningMode
+from config import HAND_INDEX_BY_NAME, LEFT_ELBOW_INDEX, LEFT_HIP_INDEX, LEFT_SHOULDER_INDEX, LEFT_WRIST_INDEX, RIGHT_ELBOW_INDEX, RIGHT_HIP_INDEX, RIGHT_SHOULDER_INDEX, RIGHT_WRIST_INDEX
 from pose_server.maskrcnn_segmenter import MaskRCNNPersonSegmenter
-from pose_server.pose_detector import HAND_COLORS, PERSON_COLORS, PoseDetector as BasePoseDetector
+from pose_server.pose_detector import HAND_COLORS, PERSON_COLORS, PoseDetector as BasePoseDetector, _SideMemory
 from pose_server.yolo_person_detector import YOLOPersonDetector
 from process.identity_memory import bbox_iou, estimate_pose_bbox, expand_bbox, extract_identity_features
 from utils.math_utils import average, distance_2d
 
-
 class PoseDetector(BasePoseDetector):
     def __init__(self, config):
         super().__init__(config)
-        self._hand_side_memory: dict[int, dict] = {}
-        self.pose_landmarker_image = PoseLandmarker.create_from_options(
-            PoseLandmarkerOptions(
-                base_options=python.BaseOptions(model_asset_path=str(POSE_MODEL_PATH)),
-                running_mode=RunningMode.IMAGE,
-                num_poses=1,
-                min_pose_detection_confidence=config.min_pose_detection_confidence,
-                min_pose_presence_confidence=config.min_pose_presence_confidence,
-                min_tracking_confidence=config.min_tracking_confidence,
-            )
-        )
-        self.hand_landmarker_image = HandLandmarker.create_from_options(
-            HandLandmarkerOptions(
-                base_options=python.BaseOptions(model_asset_path=str(HAND_MODEL_PATH)),
-                running_mode=RunningMode.IMAGE,
-                num_hands=2,
-                min_hand_detection_confidence=config.min_hand_detection_confidence,
-                min_hand_presence_confidence=config.min_hand_presence_confidence,
-                min_tracking_confidence=config.min_hand_tracking_confidence,
-            )
-        )
+        self._hand_side_memory: dict[int, _SideMemory] = {}
+        self.pose_landmarker_image = self._create_pose_landmarker(RunningMode.IMAGE, 1)
+        self.hand_landmarker_image = self._create_hand_landmarker(RunningMode.IMAGE, 2)
 
         self.yolo_detector: YOLOPersonDetector | None = None
         self.mask_segmenter: MaskRCNNPersonSegmenter | None = None
@@ -47,15 +24,22 @@ class PoseDetector(BasePoseDetector):
         if self.config.enable_yolo_identity_assist:
             try:
                 yolo_model_path = str(self.config.model_dir / self.config.yolo_model_name)
-                self.yolo_detector = YOLOPersonDetector(yolo_model_path, self.config.yolo_person_confidence)
-                print(f"YOLO assist enabled: {yolo_model_path}")
+                self.yolo_detector = YOLOPersonDetector(
+                    yolo_model_path,
+                    self.config.yolo_person_confidence,
+                    device=self.acceleration.yolo_device,
+                )
+                print(f"YOLO assist enabled: {yolo_model_path} [{self.acceleration.yolo_device}]")
             except Exception as exc:
                 print(f"YOLO assist disabled: {exc}")
 
         if self.yolo_detector is not None and self.config.enable_mask_rcnn_refinement:
             try:
-                self.mask_segmenter = MaskRCNNPersonSegmenter(self.config.mask_rcnn_score_threshold)
-                print("Mask R-CNN refinement enabled.")
+                self.mask_segmenter = MaskRCNNPersonSegmenter(
+                    self.config.mask_rcnn_score_threshold,
+                    device=self.acceleration.torch_device,
+                )
+                print(f"Mask R-CNN refinement enabled [{self.acceleration.torch_device}].")
             except Exception as exc:
                 print(f"Mask R-CNN refinement disabled: {exc}")
 
@@ -96,8 +80,15 @@ class PoseDetector(BasePoseDetector):
         draw_handedness = []
 
         for detection in detections:
-            matched_mask = self._match_mask(mask_candidates, detection["bbox"])
-            crop_bbox = expand_bbox(detection["bbox"], frame_width, frame_height, scale=0.12)
+            detection_bbox = detection.get("bbox")
+            if detection_bbox is None:
+                continue
+
+            matched_mask = self._match_mask(mask_candidates, detection_bbox)
+            crop_bbox = expand_bbox(detection_bbox, frame_width, frame_height, scale=0.12)
+            if crop_bbox is None:
+                continue
+
             crop = frame[crop_bbox["y0"]:crop_bbox["y1"], crop_bbox["x0"]:crop_bbox["x1"]].copy()
             if crop.size == 0:
                 continue
@@ -121,7 +112,7 @@ class PoseDetector(BasePoseDetector):
                 mapped_hand_result,
                 frame,
                 [{
-                    "_bbox": detection["bbox"],
+                    "_bbox": detection_bbox,
                     "_yolo_track_id": detection.get("track_id"),
                     "_detector_confidence": detection.get("confidence"),
                 }],
@@ -191,7 +182,10 @@ class PoseDetector(BasePoseDetector):
 
         return self._build_hand_result(roi_results)
 
-    def _map_pose_result(self, pose_result, bbox: dict, frame_width: int, frame_height: int):
+    def _map_pose_result(self, pose_result, bbox: dict | None, frame_width: int, frame_height: int):
+        if bbox is None:
+            return SimpleNamespace(pose_landmarks=[], pose_world_landmarks=[])
+
         mapped_pose_images = []
         for pose_image in list(pose_result.pose_landmarks or [])[:1]:
             mapped_pose = []
@@ -212,7 +206,10 @@ class PoseDetector(BasePoseDetector):
             pose_world_landmarks=list(pose_result.pose_world_landmarks or [])[: len(mapped_pose_images)],
         )
 
-    def _map_hand_result(self, hand_result, bbox: dict, frame_width: int, frame_height: int):
+    def _map_hand_result(self, hand_result, bbox: dict | None, frame_width: int, frame_height: int):
+        if bbox is None:
+            return self._build_hand_result([])
+
         mapped_entries = []
         hand_images = list(hand_result.hand_landmarks or [])
         hand_worlds = list(hand_result.hand_world_landmarks or [])

@@ -75,17 +75,17 @@ def _fill_missing_people(sequence: list[dict | None]) -> list[dict | None]:
 
         prev_index, prev_person = _nearest_person(filled, frame_index, -1)
         next_index, next_person = _nearest_person(filled, frame_index, 1)
-        if prev_person is not None and next_person is not None:
+        if prev_person is not None and next_person is not None and prev_index is not None and next_index is not None:
             if (next_index - prev_index - 1) <= MAX_PERSON_GAP_FRAMES:
                 alpha = (frame_index - prev_index) / max(next_index - prev_index, 1)
                 filled[frame_index] = _interpolate_person(prev_person, next_person, alpha, source="repair_person_interp")
                 continue
 
-        if prev_person is not None and (frame_index - prev_index) <= MAX_HOLD_GAP_FRAMES:
+        if prev_person is not None and prev_index is not None and (frame_index - prev_index) <= MAX_HOLD_GAP_FRAMES:
             filled[frame_index] = _clone_person(prev_person, source="repair_person_hold")
             continue
 
-        if next_person is not None and (next_index - frame_index) <= MAX_HOLD_GAP_FRAMES:
+        if next_person is not None and next_index is not None and (next_index - frame_index) <= MAX_HOLD_GAP_FRAMES:
             filled[frame_index] = _clone_person(next_person, source="repair_person_prefill")
 
     return filled
@@ -129,7 +129,7 @@ def _repair_joint_series(sequence: list[dict | None], section_name: str, joint_n
         next_index, next_person = _nearest_valid_joint(sequence, frame_index, section_name, joint_name, 1, validity_fn)
 
         repaired_joint = None
-        if prev_person is not None and next_person is not None:
+        if prev_person is not None and next_person is not None and prev_index is not None and next_index is not None:
             gap = next_index - prev_index - 1
             if gap <= MAX_INTERPOLATION_GAP_FRAMES:
                 alpha = (frame_index - prev_index) / max(next_index - prev_index, 1)
@@ -141,14 +141,14 @@ def _repair_joint_series(sequence: list[dict | None], section_name: str, joint_n
                     body_joint=section_name == "body",
                 )
 
-        if repaired_joint is None and prev_person is not None and (frame_index - prev_index) <= MAX_HOLD_GAP_FRAMES:
+        if repaired_joint is None and prev_person is not None and prev_index is not None and (frame_index - prev_index) <= MAX_HOLD_GAP_FRAMES:
             repaired_joint = _clone_joint(
                 prev_person[section_name][joint_name],
                 source=f"repair_hold_{section_name}",
                 body_joint=section_name == "body",
             )
 
-        if repaired_joint is None and next_person is not None and (next_index - frame_index) <= MAX_HOLD_GAP_FRAMES:
+        if repaired_joint is None and next_person is not None and next_index is not None and (next_index - frame_index) <= MAX_HOLD_GAP_FRAMES:
             repaired_joint = _clone_joint(
                 next_person[section_name][joint_name],
                 source=f"repair_prefill_{section_name}",
@@ -254,14 +254,14 @@ def _estimate_reference_directions(sequence: list[dict | None]) -> dict[tuple[st
 
 def _lookup_segment_direction(sequence: list[dict | None], frame_index: int, parent_name: str, child_name: str):
     prev_index, prev_person = _nearest_person(sequence, frame_index, -1)
-    while prev_person is not None:
+    while prev_person is not None and prev_index is not None:
         direction = _segment_direction(prev_person, parent_name, child_name)
         if direction is not None:
             return direction
         prev_index, prev_person = _nearest_person(sequence, prev_index, -1)
 
     next_index, next_person = _nearest_person(sequence, frame_index, 1)
-    while next_person is not None:
+    while next_person is not None and next_index is not None:
         direction = _segment_direction(next_person, parent_name, child_name)
         if direction is not None:
             return direction

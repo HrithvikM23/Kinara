@@ -32,7 +32,7 @@ class PersonTracker:
     def update(self, persons: list[dict], frame_index: int = 0, timestamp_ms: int = 0) -> list[dict]:
         remaining_persons = list(persons)
         track_matches: list[tuple[TrackState, dict]] = []
-        claimed_profile_slots = {
+        claimed_profile_slots: set[int] = {
             track.profile_slot_id
             for track in self.tracks.values()
             if track.profile_slot_id is not None and track.missed_frames <= self.max_missed_frames
@@ -88,7 +88,7 @@ class PersonTracker:
         )
         return {"x": extrapolated[0], "y": extrapolated[1], "z": extrapolated[2]}
 
-    def _create_track(self, person: dict, frame_index: int, timestamp_ms: int, claimed_profile_slots: set[int | None]) -> TrackState:
+    def _create_track(self, person: dict, frame_index: int, timestamp_ms: int, claimed_profile_slots: set[int]) -> TrackState:
         anchor = person.get("_anchor") or {"x": 0.0, "y": 0.0, "z": 0.0}
         profile_slot_id = self._choose_profile_slot(person, claimed_profile_slots)
         track_id = profile_slot_id if profile_slot_id is not None else self.next_track_id
@@ -110,16 +110,20 @@ class PersonTracker:
         self.tracks[track.track_id] = track
         return track
 
-    def _update_track(self, track: TrackState, person: dict, frame_index: int, timestamp_ms: int, claimed_profile_slots: set[int | None]) -> None:
+    def _update_track(self, track: TrackState, person: dict, frame_index: int, timestamp_ms: int, claimed_profile_slots: set[int]) -> None:
         anchor = person.get("_anchor") or track.anchor
         delta = vector_subtract(
             (float(anchor["x"]), float(anchor["y"]), float(anchor["z"])),
             (float(track.anchor["x"]), float(track.anchor["y"]), float(track.anchor["z"])),
         )
         if track.age > 0:
-            track.velocity = tuple((0.55 * delta[index]) + (0.45 * track.velocity[index]) for index in range(3))
+            track.velocity = (
+                (0.55 * delta[0]) + (0.45 * track.velocity[0]),
+                (0.55 * delta[1]) + (0.45 * track.velocity[1]),
+                (0.55 * delta[2]) + (0.45 * track.velocity[2]),
+            )
         else:
-            track.velocity = delta
+            track.velocity = (delta[0], delta[1], delta[2])
 
         track.anchor = dict(anchor)
         track.missed_frames = 0
@@ -195,7 +199,7 @@ class PersonTracker:
                 }
         return merged
 
-    def _choose_profile_slot(self, person: dict, claimed_profile_slots: set[int | None]) -> int | None:
+    def _choose_profile_slot(self, person: dict, claimed_profile_slots: set[int]) -> int | None:
         profile_scores = ((person.get("_appearance") or {}).get("profile_scores") or {})
         best_slot = None
         best_score = 0.0
@@ -212,10 +216,10 @@ class PersonTracker:
         if profile_slot_id is None:
             return 0.0
         profile_scores = ((person.get("_appearance") or {}).get("profile_scores") or {})
-        return float(profile_scores.get(profile_slot_id) or 0.0)
+        return float(profile_scores.get(str(profile_slot_id), profile_scores.get(profile_slot_id, 0.0)) or 0.0)
 
     def _build_identity_payload(self, track: TrackState, person: dict) -> dict:
-        profile = self.identity_profiles.get(track.profile_slot_id)
+        profile = self.identity_profiles.get(track.profile_slot_id) if track.profile_slot_id is not None else None
         appearance = person.get("_appearance") or {}
         regions = appearance.get("regions") or {}
         top_region = regions.get("top") or {}

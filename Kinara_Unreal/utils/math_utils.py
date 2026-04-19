@@ -295,7 +295,12 @@ def quaternion_from_forward_up(forward_vector, up_hint=None):
         right = cross(fallback, forward)
 
     right = normalize(right)
+    if right is None or vector_length(right) <= EPSILON:
+        return quaternion_identity()
+
     up = normalize(cross(forward, right))
+    if up is None or vector_length(up) <= EPSILON:
+        return quaternion_identity()
 
     matrix_rows = (
         (right[0], forward[0], up[0]),

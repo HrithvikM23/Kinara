@@ -11,13 +11,16 @@ except ImportError as exc:
 
 
 class YOLOPersonDetector:
-    def __init__(self, model_path: str = "yolov8x.pt", confidence: float = 0.35):
+    def __init__(self, model_path: str = "yolov8x.pt", confidence: float = 0.35, device: str = "cpu"):
         self.model: YOLO = YOLO(str(Path(model_path)))
+        self.device = device
+        self.model.to(self.device)
         self.confidence = float(confidence)
 
     def detect(self, frame, max_people: int) -> list[dict]:
         results = self.model.track(
             source=frame,
+            device=self.device,
             conf=self.confidence,
             classes=[0],
             persist=True,

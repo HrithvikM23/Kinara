@@ -67,7 +67,7 @@ def build_bbox(x0: int, y0: int, x1: int, y1: int) -> dict:
     }
 
 
-def expand_bbox(bbox: dict, frame_width: int, frame_height: int, scale: float = 0.12) -> dict:
+def expand_bbox(bbox: dict | None, frame_width: int, frame_height: int, scale: float = 0.12) -> dict | None:
     if bbox is None:
         return None
 
@@ -174,7 +174,7 @@ def compute_color_scores(crop) -> dict[str, float]:
 def dominant_color(scores: dict[str, float]) -> tuple[str | None, float]:
     if not scores:
         return None, 0.0
-    color_name = max(scores, key=scores.get)
+    color_name = max(scores, key=lambda name: scores[name])
     return color_name, float(scores[color_name])
 
 

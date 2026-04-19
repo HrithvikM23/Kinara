@@ -193,6 +193,7 @@ class PipelineConfig:
     yolo_person_confidence: float = 0.35
     enable_mask_rcnn_refinement: bool = False
     mask_rcnn_score_threshold: float = 0.5
+    prefer_gpu: bool = True
     enable_motion_export: bool = True
     export_json: bool = True
     export_bvh: bool = True

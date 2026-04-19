@@ -7,7 +7,7 @@ from process.identity_memory import build_bbox, clamp_bbox
 
 
 class MaskRCNNPersonSegmenter:
-    def __init__(self, score_threshold: float = 0.5):
+    def __init__(self, score_threshold: float = 0.5, device: str = "cpu"):
         try:
             import torch
             from torchvision.models.detection import MaskRCNN_ResNet50_FPN_Weights, maskrcnn_resnet50_fpn
@@ -19,7 +19,7 @@ class MaskRCNNPersonSegmenter:
         self.model = maskrcnn_resnet50_fpn(weights=weights)
         self.model.eval()
         self.score_threshold = float(score_threshold)
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(device)
         self.model.to(self.device)
 
     def detect(self, frame) -> list[dict]:

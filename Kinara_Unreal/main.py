@@ -1,11 +1,10 @@
 from __future__ import annotations
 import argparse
-from email import parser
 import sys
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 import cv2
 from camera.video_input import choose_video
 from config import (
@@ -22,6 +21,7 @@ from network.udp_sender import UDPSender
 from pose_server.assisted_pose_detector import PoseDetector
 from process.multi_camera_fusion import MultiCameraFusion
 from utils.motion_export import MotionExporter
+from utils.runtime_acceleration import detect_acceleration
 from utils.video_output import VideoWriter
 
 
@@ -56,7 +56,7 @@ class SessionEnded(Exception):
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="HMT3A Unreal v2 motion pipeline")
+    parser = argparse.ArgumentParser(description="Kinara Unreal v2 motion pipeline")
     parser.add_argument("--source", help="Single webcam index like 0, or a video path")
     parser.add_argument("--max-persons", type=int, help="Maximum number of people to track")
     parser.add_argument("--udp-ip", help="UDP target IP")
@@ -89,6 +89,7 @@ def parse_args() -> argparse.Namespace:
         help="Enable Mask R-CNN refinement during final render (requires --enable-yolo)")
     parser.add_argument("--mask-rcnn-score", type=float, help="Minimum Mask R-CNN person score")
     parser.add_argument("--rcnn-confidence", type=float, help="Alias for --mask-rcnn-score")
+    parser.add_argument("--cpu-only", action="store_true", help="Disable GPU acceleration and force CPU backends")
     return parser.parse_args()
 
 def prompt_int(prompt: str, minimum: int, default: int, maximum: int | None = None) -> int:
@@ -279,6 +280,7 @@ def build_config(args: argparse.Namespace) -> PipelineConfig:
         preview=not args.no_preview,
         record_output=not args.no_record,
     )
+    setattr(config, "prefer_gpu", not args.cpu_only)
 
     if args.udp_ip:
         config.udp_ip = args.udp_ip
@@ -793,6 +795,20 @@ def main() -> int:
 
     try:
         config = build_config(args)
+        prefer_gpu = bool(getattr(cast(Any, config), "prefer_gpu", True))
+        acceleration = detect_acceleration(prefer_gpu)
+        print("Acceleration profile:")
+        print(f"- Preferred backend: {'GPU' if prefer_gpu else 'CPU'}")
+        print(f"- Active YOLO device: {acceleration.yolo_device}")
+        print(f"- Active Torch device: {acceleration.torch_device}")
+        if acceleration.gpu_name:
+            cuda_label = acceleration.cuda_version or "detected"
+            print(f"- NVIDIA GPU: {acceleration.gpu_name} | CUDA runtime: {cuda_label}")
+        print(f"- cuDNN available: {'yes' if acceleration.cudnn_available else 'no'}")
+        if acceleration.cudnn_version is not None:
+            print(f"- cuDNN version: {acceleration.cudnn_version}")
+        for note in acceleration.notes:
+            print(f"- {note}")
         assignments = build_assignments(args)
         run_session(assignments, config)
     except Exception as exc:

@@ -154,7 +154,7 @@ bpy.ops.export_scene.fbx(
 
         temp_script_path = None
         try:
-            with tempfile.NamedTemporaryFile("w", suffix="_hmt3a_fbx.py", delete=False, encoding="utf-8") as handle:
+            with tempfile.NamedTemporaryFile("w", suffix="_kinara_fbx.py", delete=False, encoding="utf-8") as handle:
                 handle.write(script_content)
                 temp_script_path = Path(handle.name)
 
@@ -311,4 +311,9 @@ bpy.ops.export_scene.fbx(
         if raw_quaternion is None or len(raw_quaternion) != 4:
             return quaternion_identity()
 
-        return tuple(float(component) for component in raw_quaternion)
+        return (
+            float(raw_quaternion[0]),
+            float(raw_quaternion[1]),
+            float(raw_quaternion[2]),
+            float(raw_quaternion[3]),
+        )
