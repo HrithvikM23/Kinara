@@ -1,4 +1,4 @@
-# Human Motion to Animation Pipeline (HMT3A)
+# Human Motion to Animation Pipeline (Kinara)
 
 A human motion capture pipeline that converts human movement from a webcam or video into 3D character animation inside Unreal Engine 5.
 
@@ -88,9 +88,9 @@ YOLO and Mask R-CNN use PyTorch, so CUDA and cuDNN are used through PyTorch when
 
 ```bash
 cd D:\IDT
-git clone https://github.com/HrithvikM23/HMT3A.git
+git clone https://github.com/HrithvikM23/Kinara.git
 
-cd HMT3A\HMT3A_Unreal
+cd Kinara\Kinara_Unreal
 ```
 
 Initialize Python packages if needed:
@@ -232,9 +232,9 @@ At startup the pipeline prints an acceleration summary showing the preferred bac
 # Project Structure
 
 ```txt
-HMT3A/
-|-- HMT3A_Blender/
-|-- HMT3A_Unreal/
+Kinara/
+|-- Kinara_Blender/
+|-- Kinara_Unreal/
 |   |-- main.py
 |   |-- config.py
 |   |-- camera/
@@ -261,7 +261,7 @@ HMT3A/
 ## Step 2 - Run the Python Pipeline
 
 ```bash
-cd D:\IDT\HMT3A\HMT3A_Unreal
+cd D:\IDT\Kinara\Kinara_Unreal
 python main.py
 ```
 
