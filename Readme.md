@@ -1,4 +1,4 @@
-# Human Motion to Animation Pipeline (HMT3A)
+# Human Motion to Animation Pipeline (Kinara)
 
 A human motion capture pipeline that converts human movement from a webcam or video into 3D character animation inside Unreal Engine 5.
 
@@ -21,8 +21,8 @@ The system tracks body and hands together, supports multi-camera input, streams 
 | ------------- | ------- | ------------------------ |
 | Unreal Engine | 5.4     | Target animation runtime |
 | Python        | 3.11.9  | Pipeline scripting       |
-| CUDA Toolkit  | 13.2    | Optional acceleration    |
-| cuDNN         | 9.x     | Optional backend support |
+| CUDA Toolkit  | 12.9+   | Optional acceleration for NVIDIA systems |
+| cuDNN         | 9.x     | Used indirectly by PyTorch-backed GPU inference |
 
 ---
 
@@ -40,11 +40,13 @@ During installation, check **Add Python to PATH**.
 
 ---
 
-## 2. Install CUDA Toolkit 13.2
+## 2. Install CUDA Toolkit
 
 Download from:
 
 https://developer.nvidia.com/cuda-downloads
+
+Use a CUDA version that matches your installed PyTorch build. CUDA 12.9 is supported when the local PyTorch runtime is built for a compatible CUDA 12.x stack.
 
 Select: `Windows → x86_64 → exe (local)` and run with Express Install.
 
@@ -53,11 +55,11 @@ Select: `Windows → x86_64 → exe (local)` and run with Express Install.
 ## 3. Install cuDNN
 
 1. Go to https://developer.nvidia.com/cudnn
-2. Download cuDNN for CUDA 13.x
+2. Download cuDNN for your installed CUDA 12.x toolkit
 3. Extract contents into:
 
 ```
-C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\
+C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.x\
 ```
 
 ---
@@ -78,15 +80,17 @@ pip install ultralytics torch torchvision
 
 The identity stack enables YOLO person detection and tracking, optional Mask R-CNN refinement, and configurable color-based identity memory.
 
+YOLO and Mask R-CNN use PyTorch, so CUDA and cuDNN are used through PyTorch when available. MediaPipe uses its own GPU delegate when supported and otherwise falls back to CPU.
+
 ---
 
 ## 5. Set Up the Project
 
 ```bash
 cd D:\IDT
-git clone https://github.com/HrithvikM23/HMT3A.git
+git clone https://github.com/HrithvikM23/Kinara.git
 
-cd HMT3A\HMT3A_Unreal
+cd Kinara\Kinara_Unreal
 ```
 
 Initialize Python packages if needed:
@@ -105,27 +109,27 @@ type nul > utils\__init__.py
 
 ```txt
 Camera / Video File(s)
-        ->
+        ↓
 Preview Pass:
 MediaPipe Pose + Hand Tracking
-        ->
+        ↓
 Per-Camera Landmark Detection
-        ->
+        ↓
 Multi-Camera Fusion (optional)
-        ->
+        ↓
 UDP Streaming / Preview Output
 
 Final Render Pass (optional heavier path):
 YOLO Person Detection / Tracking (optional)
-        ->
+        ↓
 Mask R-CNN Person Refinement (optional)
-        ->
+        ↓
 Per-Person MediaPipe Pose + Hand Tracking
-        ->
+        ↓
 Color-Based Identity Memory (optional)
-        ->
+        ↓
 Multi-Camera Fusion
-        ->
+        ↓
 Unified Landmark Packet + Motion Export
 ```
 
@@ -213,6 +217,8 @@ outputs/final_renders/
 outputs/motion_exports/
 ```
 
+At startup the pipeline prints an acceleration summary showing the preferred backend, active YOLO device, active Torch device, NVIDIA GPU name, CUDA runtime, cuDNN availability, and cuDNN version when detected.
+
 ---
 
 # FPS and Resolution
@@ -226,9 +232,9 @@ outputs/motion_exports/
 # Project Structure
 
 ```txt
-HMT3A/
-|-- HMT3A_Blender/
-|-- HMT3A_Unreal/
+Kinara/
+|-- Kinara_Blender/
+|-- Kinara_Unreal/
 |   |-- main.py
 |   |-- config.py
 |   |-- camera/
@@ -255,7 +261,7 @@ HMT3A/
 ## Step 2 - Run the Python Pipeline
 
 ```bash
-cd D:\IDT\HMT3A\HMT3A_Unreal
+cd D:\IDT\Kinara\Kinara_Unreal
 python main.py
 ```
 
@@ -276,6 +282,8 @@ Proceed with final render? [Y/n]
 Press ESC to exit preview windows.
 
 Input source, person count, FPS cap, resolution, export formats, UDP target, confidence thresholds, YOLO model, identity memory, and camera calibration can all be configured via CLI arguments. See **ARGS.md** for the full reference.
+
+Use `--cpu-only` to disable GPU acceleration and force CPU backends.
 
 ---
 
@@ -344,6 +352,7 @@ Add offline playback, review, and cleanup tools for exported motion packages.
 * OpenCV
 * NumPy
 * Python 3.11
+* PyTorch / TorchVision for YOLO and Mask R-CNN acceleration
 
 ### Networking
 * UDP sockets
