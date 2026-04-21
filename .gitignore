@@ -1,0 +1,54 @@
+# ----------------------
+# Python cache / builds
+# ----------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environment
+venv/
+.env/
+.envrc
+
+# ----------------------
+# Logs & runtime outputs
+# ----------------------
+logs/
+outputs/
+*.log
+*.mp4
+*.avi
+*.jpg
+
+# ----------------------
+# Model weights (VERY IMPORTANT)
+# ----------------------
+*.pth
+*.pt
+*.onnx
+
+# ----------------------
+# OS / Editor junk
+# ----------------------
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ----------------------
+# Jupyter (if used)
+# ----------------------
+.ipynb_checkpoints/
+
+# ----------------------
+# Temporary files
+# ----------------------
+*.tmp
+*.cache
+
+# ----------------------
+# CUDA / Torch artifacts (optional)
+# ----------------------
+*.cuda
