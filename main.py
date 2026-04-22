@@ -4,8 +4,8 @@ import onnxruntime as ort
 
 BODY_MODEL_PATH = r"D:\IDT\Kinara\models\movenet.onnx"
 HAND_MODEL_PATH = r"D:\IDT\Kinara\models\hand_pose.onnx"
-VIDEO_PATH = r"C:\Users\HrithvikM's PC\Downloads\WhatsApp Video 2026-04-18 at 10.01.30 PM.mp4"
-OUTPUT_PATH = r"D:\IDT\Kinara\outputs\pose_with_hands.mp4"
+VIDEO_PATH = r"location of video"
+OUTPUT_PATH = r"location of output folder"
 
 BODY_INPUT_NAME = "input"
 HAND_INPUT_NAME = "images"
