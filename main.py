@@ -1,171 +1,134 @@
+from __future__ import annotations
+
+import argparse
 import cv2
-import numpy as np
-import onnxruntime as ort
+import tkinter as tk
+from tkinter import filedialog
+from pathlib import Path
 
-BODY_MODEL_PATH = r"D:\IDT\Kinara\models\movenet.onnx"
-HAND_MODEL_PATH = r"D:\IDT\Kinara\models\hand_pose.onnx"
-VIDEO_PATH = r"location of video"
-OUTPUT_PATH = r"location of output folder"
+from camera.capture import VideoCaptureSession
+from config import PipelineConfig
+from inference.rtmpose import ONNXPoseHandRunner
+from network.osc_sender import OSCSender
+from pipeline.pipeline import PoseHandPipeline
+from utils.smoothing import LandmarkSmoother
 
-BODY_INPUT_NAME = "input"
-HAND_INPUT_NAME = "images"
 
-BODY_INPUT_SIZE = 192
-HAND_INPUT_SIZE = 640
+def choose_video_gui() -> str | None:
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    path = filedialog.askopenfilename(
+        title="Select Video File",
+        filetypes=[
+            ("Video Files", "*.mp4 *.avi *.mov *.mkv"),
+            ("All Files", "*.*"),
+        ],
+    )
+    root.destroy()
+    return path or None
 
-BODY_CONF_THRESHOLD = 0.3
-HAND_DET_THRESHOLD = 0.15
-HAND_KP_THRESHOLD = 0.20
 
-BODY_EDGES = [
-    (5, 7), (7, 9),
-    (6, 8), (8, 10),
-    (5, 6), (5, 11),
-    (6, 12), (11, 12),
-    (11, 13), (13, 15),
-    (12, 14), (14, 16),
-]
+def resolve_source(args: argparse.Namespace) -> int | Path | None:
+    """
+    Determine the video source from CLI args or interactive prompt.
+    Returns:
+        int  -> webcam index
+        Path -> video file path
+        None -> user cancelled
+    """
+    # CLI: --source 0  or  --source path/to/video.mp4
+    if args.source is not None:
+        s = args.source.strip()
+        if s.isdigit():
+            return int(s)
+        p = Path(s)
+        if not p.exists():
+            print(f"Error: file not found: {p}")
+            return None
+        return p
 
-BODY_KEYPOINTS = {5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+    # Interactive prompt
+    print("Select input source:")
+    print("  1. Webcam")
+    print("  2. Video file ")
+    choice = input("Enter choice [1/2]: ").strip()
 
-HAND_EDGES = [
-    (0, 1), (1, 2), (2, 3), (3, 4),
-    (0, 5), (5, 6), (6, 7), (7, 8),
-    (0, 9), (9, 10), (10, 11), (11, 12),
-    (0, 13), (13, 14), (14, 15), (15, 16),
-    (0, 17), (17, 18), (18, 19), (19, 20),
-]
+    if choice == "1":
+        idx = input("Webcam index: ").strip()
+        return int(idx) if idx.isdigit() else 0
 
-body_session = ort.InferenceSession(
-    BODY_MODEL_PATH,
-    providers=["CUDAExecutionProvider"]
-)
+    if choice == "2":
+        path = choose_video_gui()
+        if not path:
+            print("No file selected.")
+            return None
+        return Path(path)
+    
+    print("Invalid choice.")
+    return None
 
-hand_session = ort.InferenceSession(
-    HAND_MODEL_PATH,
-    providers=["CUDAExecutionProvider"]
-)
 
-def run_hand_on_crop(frame_bgr, x1, y1, x2, y2):
-    crop = frame_bgr[y1:y2, x1:x2]
-    if crop.size == 0:
-        return None
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Pose and Hand Landmark Pipeline")
+    parser.add_argument(
+        "--source",
+        help="Webcam index (e.g. 0) or path to a video file. "
+             "If omitted, an interactive prompt runs.",
+    )
+    parser.add_argument(
+        "--no-preview",
+        action="store_true",
+        help="Disable the live OpenCV preview window.",
+    )
+    args = parser.parse_args()
 
-    crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-    resized = cv2.resize(crop_rgb, (HAND_INPUT_SIZE, HAND_INPUT_SIZE), interpolation=cv2.INTER_LINEAR)
-    hand_input = resized.astype(np.float32) / 255.0
-    hand_input = np.transpose(hand_input, (2, 0, 1))
-    hand_input = np.expand_dims(hand_input, axis=0)
+    # ------------------------------------------------------------------ #
+    # Resolve source BEFORE building any objects                          #
+    # ------------------------------------------------------------------ #
+    source = resolve_source(args)
+    if source is None:
+        return
 
-    hand_output = hand_session.run(None, {HAND_INPUT_NAME: hand_input})
-    detections = np.asarray(hand_output[0], dtype=np.float32)[0]
+    # ------------------------------------------------------------------ #
+    # Build config and inject source                                      #
+    # ------------------------------------------------------------------ #
+    config = PipelineConfig(video_path=source)
+    if args.no_preview:
+        config.enable_preview = False
 
-    best = detections[np.argmax(detections[:, 4])]
-    if float(best[4]) <= HAND_DET_THRESHOLD:
-        return None
+    # ------------------------------------------------------------------ #
+    # Build pipeline components                                           #
+    # ------------------------------------------------------------------ #
+    session = VideoCaptureSession(config.video_path, config.output_path)
+    runner = ONNXPoseHandRunner(config)
+    smoother = LandmarkSmoother()
+    osc_sender = OSCSender()
+    pipeline = PoseHandPipeline(config, runner, smoother, osc_sender)
 
-    crop_w = x2 - x1
-    crop_h = y2 - y1
+    # ------------------------------------------------------------------ #
+    # Run                                                                 #
+    # ------------------------------------------------------------------ #
+    try:
+        while True:
+            ok, frame = session.read()
+            if not ok or frame is None:
+                break
 
-    points = []
-    for i in range(21):
-        base = 6 + i * 3
-        x = float(best[base])
-        y = float(best[base + 1])
-        conf = float(best[base + 2])
+            rendered = pipeline.process_frame(frame)
+            session.write(rendered)
 
-        px = x1 + int((x / HAND_INPUT_SIZE) * crop_w)
-        py = y1 + int((y / HAND_INPUT_SIZE) * crop_h)
-        points.append((px, py, conf))
+            if config.enable_preview:
+                cv2.imshow("Pose + Hand Landmarks", rendered)
+                if cv2.waitKey(1) & 0xFF == 27:   # ESC to quit
+                    break
+    finally:
+        session.close()
+        osc_sender.close()
+        cv2.destroyAllWindows()
 
-    return points
+    print(f"Saved: {config.output_path}")
 
-cap = cv2.VideoCapture(VIDEO_PATH)
-if not cap.isOpened():
-    raise RuntimeError(f"Could not open video file: {VIDEO_PATH}")
 
-frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-fps = cap.get(cv2.CAP_PROP_FPS)
-if fps <= 0:
-    fps = 30.0
-
-fourcc = cv2.VideoWriter.fourcc(*"mp4v")
-writer = cv2.VideoWriter(OUTPUT_PATH, fourcc, fps, (frame_w, frame_h))
-if not writer.isOpened():
-    cap.release()
-    raise RuntimeError(f"Could not open video writer: {OUTPUT_PATH}")
-
-while True:
-    ok, frame = cap.read()
-    if not ok or frame is None:
-        break
-
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    body_resized = cv2.resize(rgb, (BODY_INPUT_SIZE, BODY_INPUT_SIZE), interpolation=cv2.INTER_LINEAR)
-    body_input = np.expand_dims(body_resized, axis=0).astype(np.int32)
-
-    body_output = body_session.run(None, {BODY_INPUT_NAME: body_input})
-    body_keypoints = np.asarray(body_output[0], dtype=np.float32)[0, 0]
-
-    body_points = []
-    for y, x, conf in body_keypoints:
-        px = int(x * frame_w)
-        py = int(y * frame_h)
-        body_points.append((px, py, float(conf)))
-
-    for start_idx, end_idx in BODY_EDGES:
-        x1, y1, c1 = body_points[start_idx]
-        x2, y2, c2 = body_points[end_idx]
-        if c1 > BODY_CONF_THRESHOLD and c2 > BODY_CONF_THRESHOLD:
-            cv2.line(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
-
-    for idx, (px, py, conf) in enumerate(body_points):
-        if idx in BODY_KEYPOINTS and conf > BODY_CONF_THRESHOLD:
-            cv2.circle(frame, (px, py), 4, (0, 255, 0), -1)
-
-    wrist_indices = [9, 10]
-    elbow_indices = {9: 7, 10: 8}
-
-    for wrist_idx in wrist_indices:
-        wx, wy, wc = body_points[wrist_idx]
-        ex, ey, ec = body_points[elbow_indices[wrist_idx]]
-
-        if wc <= BODY_CONF_THRESHOLD or ec <= BODY_CONF_THRESHOLD:
-            continue
-
-        forearm_len = int(np.hypot(wx - ex, wy - ey))
-        box_size = max(160, forearm_len * 2)
-
-        x1 = max(0, wx - box_size // 2)
-        y1 = max(0, wy - box_size // 2)
-        x2 = min(frame_w, wx + box_size // 2)
-        y2 = min(frame_h, wy + box_size // 2)
-
-        hand_points = run_hand_on_crop(frame, x1, y1, x2, y2)
-        if hand_points is None:
-            continue
-
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (80, 80, 255), 1)
-
-        for start_idx, end_idx in HAND_EDGES:
-            x1p, y1p, c1 = hand_points[start_idx]
-            x2p, y2p, c2 = hand_points[end_idx]
-            if c1 > HAND_KP_THRESHOLD and c2 > HAND_KP_THRESHOLD:
-                cv2.line(frame, (x1p, y1p), (x2p, y2p), (0, 255, 255), 2)
-
-        for px, py, conf in hand_points:
-            if conf > HAND_KP_THRESHOLD:
-                cv2.circle(frame, (px, py), 3, (0, 165, 255), -1)
-
-    writer.write(frame)
-    cv2.imshow("Pose + Hand Landmarks", frame)
-
-    if cv2.waitKey(1) & 0xFF == 27:
-        break
-
-cap.release()
-writer.release()
-cv2.destroyAllWindows()
-
-print(f"Saved: {OUTPUT_PATH}")
+if __name__ == "__main__":
+    main()
