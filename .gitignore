@@ -3,11 +3,6 @@
 *.mp4
 *.json
 
-# ---------- Python cache ----------
-**/__pycache__/
-*.py[cod]
-*.pyc.*
-
 # ---------- Virtual environments ----------
 venv/
 .env/
@@ -15,6 +10,10 @@ venv/
 # ---------- Tool caches ----------
 .mypy_cache/
 .pytest_cache/
+.ruff_cache/
+**/__pycache__/
+*.py[cod]
+*.pyc.*
 
  # ---------- Models ---------- 
 *.pt
