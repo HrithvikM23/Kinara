@@ -21,3 +21,4 @@ venv/
 *.pth
 *.task 
 */models/*
+*.onnx
