@@ -7,38 +7,110 @@ from pathlib import Path
 @dataclass(slots=True)
 class PipelineConfig:
     project_root: Path = field(default_factory=lambda: Path(__file__).resolve().parent)
-    body_model_path: Path = field(init=False)
-    hand_model_path: Path = field(init=False)
-    video_path: int | Path = field(
-        default_factory=lambda: Path(r"C:\Users\HrithvikM's PC\Downloads\WhatsApp Video 2026-04-18 at 10.01.30 PM.mp4")
-    )
-    output_path: Path = field(init=False)
+    body_model_path: Path | None = None
+    hand_model_path: Path | None = None
+    body_model_variant: str = "max"
+    hand_model_variant: str = "max"
+    video_path: int | Path = 0
+    output_path: Path | None = None
+    output_directory: Path | None = None
+    output_basename: str | None = None
     body_input_name: str = "input"
+    body_input_dtype: str = "int32"
     hand_input_name: str = "images"
+    hand_input_dtype: str = "float32"
     body_input_size: int = 192
     hand_input_size: int = 640
     body_conf_threshold: float = 0.30
-    video_source: int | Path | str = 0 
     hand_det_threshold: float = 0.15
     hand_kp_threshold: float = 0.20
     hand_box_min_size: int = 160
     hand_box_scale: float = 2.0
     enable_preview: bool = True
     provider_names: tuple[str, ...] = ("CUDAExecutionProvider",)
+    preview_window_title: str = "Pose + Hand Landmarks"
+    osc_host: str = "127.0.0.1"
+    osc_port: int = 9000
+    osc_enabled: bool = False
+    fallback_fps: float = 30.0
+    output_fourcc: str = "mp4v"
+    body_line_color: tuple[int, int, int] = (255, 0, 0)
+    body_point_color: tuple[int, int, int] = (0, 255, 0)
+    hand_box_color: tuple[int, int, int] = (80, 80, 255)
+    hand_line_color: tuple[int, int, int] = (0, 255, 255)
+    hand_point_color: tuple[int, int, int] = (0, 165, 255)
+    body_line_thickness: int = 2
+    body_point_radius: int = 4
+    hand_box_thickness: int = 1
+    hand_line_thickness: int = 2
+    hand_point_radius: int = 3
+    body_smoothing_alpha: float = 0.65
+    hand_smoothing_alpha: float = 0.55
+    body_hold_frames: int = 8
+    hand_hold_frames: int = 6
+    hold_confidence_decay: float = 0.85
+    run_index: int = field(init=False)
+    video_extension: str = field(init=False)
+    rendered_output_path: Path = field(init=False)
+    fbx_output_path: Path = field(init=False)
+    bvh_output_path: Path = field(init=False)
+    json_output_path: Path = field(init=False)
 
     def __post_init__(self) -> None:
-        self.body_model_path = self.project_root / "models" / "movenet.onnx"
-        self.hand_model_path = self.project_root / "models" / "hand_pose.onnx"
+        if self.body_model_path is not None:
+            self.body_model_path = Path(self.body_model_path)
 
-        # Derive an output filename from the video path when available,
-        # otherwise fall back to a generic name for webcam input.
-        if isinstance(self.video_path, Path):
-            stem = self.video_path.stem
+        if self.hand_model_path is not None:
+            self.hand_model_path = Path(self.hand_model_path)
+
+        if self.output_directory is None:
+            output_directory = self.project_root / "outputs"
         else:
-            stem = f"webcam_{self.video_path}"
+            output_directory = Path(self.output_directory)
+        output_directory.mkdir(parents=True, exist_ok=True)
+        self.output_directory = output_directory
+        resolved_output_directory = self.output_directory
 
-        self.output_path = self.project_root / "outputs" / f"{stem}_tracked.mp4"
-        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.output_basename is None:
+            if isinstance(self.video_path, Path):
+                base_name = self.video_path.stem
+            else:
+                base_name = f"webcam_{self.video_path}"
+        else:
+            base_name = self.output_basename.strip()
+
+        if self.output_path is not None:
+            requested_output_path = Path(self.output_path)
+            self.output_directory = requested_output_path.parent
+            self.output_directory.mkdir(parents=True, exist_ok=True)
+            resolved_output_directory = self.output_directory
+            base_name = requested_output_path.stem
+            self.video_extension = requested_output_path.suffix or ".mp4"
+        else:
+            self.video_extension = ".mp4"
+
+        self.run_index = self._next_run_index(base_name)
+        self.rendered_output_path = resolved_output_directory / f"{base_name} rendered-{self.run_index}{self.video_extension}"
+        self.fbx_output_path = resolved_output_directory / f"{base_name} fbx-{self.run_index}.fbx"
+        self.bvh_output_path = resolved_output_directory / f"{base_name} bvh-{self.run_index}.bvh"
+        self.json_output_path = resolved_output_directory / f"{base_name} json-{self.run_index}.json"
+        self.output_path = self.rendered_output_path
+        self.output_fourcc = self.output_fourcc[:4].ljust(4)
+
+    def _next_run_index(self, base_name: str) -> int:
+        assert self.output_directory is not None
+        output_directory = self.output_directory
+        run_index = 1
+        while True:
+            sibling_paths = (
+                output_directory / f"{base_name} rendered-{run_index}{self.video_extension}",
+                output_directory / f"{base_name} fbx-{run_index}.fbx",
+                output_directory / f"{base_name} bvh-{run_index}.bvh",
+                output_directory / f"{base_name} json-{run_index}.json",
+            )
+            if not any(path.exists() for path in sibling_paths):
+                return run_index
+            run_index += 1
 
 
 BODY_EDGES = [

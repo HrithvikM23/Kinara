@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
-import onnxruntime as ort
+
+try:
+    import onnxruntime as ort
+except ModuleNotFoundError as exc:
+    raise ModuleNotFoundError(
+        "onnxruntime is not installed. Install `onnxruntime-gpu` for CUDA inference "
+        "or `onnxruntime` for CPU-only inference, then run the app again."
+    ) from exc
 
 
 class ONNXPoseHandRunner:
@@ -25,7 +32,7 @@ class ONNXPoseHandRunner:
             (self.config.body_input_size, self.config.body_input_size),
             interpolation=cv2.INTER_LINEAR,
         )
-        body_input = np.expand_dims(resized, axis=0).astype(np.int32)
+        body_input = np.expand_dims(resized, axis=0).astype(np.dtype(self.config.body_input_dtype))
         outputs = self.body_session.run(None, {self.config.body_input_name: body_input})
         keypoints = np.asarray(outputs[0], dtype=np.float32)[0, 0]
 

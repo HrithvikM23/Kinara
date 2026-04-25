@@ -5,8 +5,8 @@ from pathlib import Path
 import cv2
 
 
-class VideoCaptureSession:
-    def __init__(self, video_path: int | Path, output_path: Path):
+class VideoInputSource:
+    def __init__(self, video_path: int | Path, fallback_fps: float = 30.0):
         source = video_path if isinstance(video_path, int) else str(video_path)
         self.cap = cv2.VideoCapture(source)
         if not self.cap.isOpened():
@@ -16,21 +16,50 @@ class VideoCaptureSession:
         self.frame_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.fps = float(self.cap.get(cv2.CAP_PROP_FPS) or 0.0)
         if self.fps <= 0:
-            self.fps = 30.0
-
-        fourcc = cv2.VideoWriter.fourcc(*"mp4v")
-        self.writer = cv2.VideoWriter(str(output_path), fourcc, self.fps, (self.frame_width, self.frame_height))
-        if not self.writer.isOpened():
-            self.cap.release()
-            raise RuntimeError(f"Could not open video writer: {output_path}")
+            self.fps = fallback_fps
 
     def read(self):
         return self.cap.read()
+
+    def close(self) -> None:
+        self.cap.release()
+
+
+class VideoOutputWriter:
+    def __init__(self, output_path: Path, frame_width: int, frame_height: int, fps: float, output_fourcc: str = "mp4v"):
+        fourcc = cv2.VideoWriter.fourcc(*output_fourcc[:4].ljust(4))
+        self.writer = cv2.VideoWriter(str(output_path), fourcc, fps, (frame_width, frame_height))
+        if not self.writer.isOpened():
+            raise RuntimeError(f"Could not open video writer: {output_path}")
 
     def write(self, frame) -> None:
         self.writer.write(frame)
 
     def close(self) -> None:
-        self.cap.release()
         self.writer.release()
+
+
+class VideoCaptureSession:
+    def __init__(self, video_path: int | Path, output_path: Path, fallback_fps: float = 30.0, output_fourcc: str = "mp4v"):
+        self.source = VideoInputSource(video_path, fallback_fps=fallback_fps)
+        self.frame_width = self.source.frame_width
+        self.frame_height = self.source.frame_height
+        self.fps = self.source.fps
+        self.writer = VideoOutputWriter(
+            output_path,
+            frame_width=self.frame_width,
+            frame_height=self.frame_height,
+            fps=self.fps,
+            output_fourcc=output_fourcc,
+        )
+
+    def read(self):
+        return self.source.read()
+
+    def write(self, frame) -> None:
+        self.writer.write(frame)
+
+    def close(self) -> None:
+        self.source.close()
+        self.writer.close()
         cv2.destroyAllWindows()
