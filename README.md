@@ -344,6 +344,18 @@ All CLI arguments are documented in [args.md](https://github.com/HrithvikM23/Kin
 | JSON export generation              | Complete |
 | FBX export generation               | Complete |
 | Live UDP streaming                  | Complete |
+| Live root motion in Unreal/Blender  | Planned  |
+| Live-only low-RAM mode with optional exports | Planned  |
+| Android multi-phone LAN/WLAN streaming ingest | Planned  |
+| Marker-glove hand tracking with joint dots | Planned  |
+| Standalone desktop app build with .exe launcher | Planned  |
+| Auto identity re-lock after person crossings | Planned  |
+| Connection health monitor for ping, packet loss, latency, and FPS | Planned  |
+| Hand inference decimation with interpolation between frames | Planned  |
+| Occlusion recovery for missing joints across camera views | Planned  |
+| Head and face tracking for head aim and facial landmarks | Planned  |
+| Retarget presets for Unreal, MetaHuman, Mixamo, and Rigify | Planned  |
+| Foot contact and ground lock to reduce foot sliding | Planned  |
 | Multi-person FBX export             | Complete |
 | Calibration-aware 3D fusion         | Working  |
 | Multi-camera + multi-person         | Complete |
@@ -359,6 +371,10 @@ Improve the current view-aware depth estimation into stronger calibration-driven
 ## Runtime Streaming
 
 Keep the current UDP live-motion path and add an Unreal-side receiver/parser workflow around the v2 packet schema.
+
+## Android Multi-Phone Capture
+
+Add an Android client flow where up to four phones can stream camera video over LAN/WLAN to a PC receiver. The planned backend path includes port-based client listening, camera-role assignment such as FRONT/BACK/LEFT/RIGHT/UP, a connection handshake/health-check before capture begins, bounded buffering between ingest and inference, and confidence-based multi-camera fusion for final output generation.
 
 ---
 
