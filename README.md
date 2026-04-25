@@ -21,16 +21,12 @@ This branch is currently optimized for practical local runtime use:
 
 ## Required Software
 
-```txt
-| Tool         | Version           | Notes                                 |
-| ---          | ---               | ---                                   |
-| Python       | 3.10+             | Pipeline runtime                      |
-| PyTorch      | Recent CUDA build | Needed for Ultralytics YOLO           |
-| Ultralytics  | Recent            | Body pose and multi-person tracking   |
-| ONNX Runtime | Latest compatible | Hand pose inference                   |
-| CUDA Toolkit | 12.x+             | Optional GPU acceleration             |
-| cuDNN        | 9.x               | Required for ONNX Runtime CUDA        |
-```
+| Tool | Version | Notes |
+| --- | --- | --- |
+| Unreal Engine | 5.4 | Target animation runtime |
+| Python | 3.11.9 | Pipeline scripting |
+| CUDA Toolkit | 12.9+ | Optional acceleration for NVIDIA systems |
+| cuDNN | 9.x | Used indirectly by PyTorch-backed GPU inference |
 
 ---
 
@@ -322,7 +318,6 @@ All CLI arguments are documented in [args.md](https://github.com/HrithvikM23/Kin
 
 # Current Development Status
 
-```txt
 | Component                           | Status   |
 | ---                                 | ---      |
 | Webcam input                        | Complete |
@@ -345,7 +340,6 @@ All CLI arguments are documented in [args.md](https://github.com/HrithvikM23/Kin
 | Multi-person FBX export             | Planned  |
 | Calibration-aware 3D fusion         | Planned  |
 | Multi-camera + multi-person         | Planned  |
-```
 
 ---
 
