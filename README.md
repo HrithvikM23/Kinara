@@ -194,9 +194,7 @@ Example identity hints:
 py main.py --source ".\two_people.mp4" --max-people 2 --identity person1=black,orange --identity person2=gray,silver
 ```
 
-Important limitation:
-
-Multi-camera plus multi-person at the same time is not the current default workflow.
+Multi-camera plus multi-person can now run together through the fused multi-person path.
 
 ---
 
@@ -211,7 +209,7 @@ Multi-camera mode currently supports:
 - RIGHT
 ```
 
-The current fusion path is still shared-reference 2D fusion, not full calibration-aware 3D reconstruction.
+The current fusion path now supports view-aware depth estimation with optional per-camera calibration overrides from JSON.
 
 ---
 
@@ -237,9 +235,12 @@ Current packet content includes:
 ```txt
 - person IDs
 - person labels
+- frame metadata
+- fused camera-view labels
 - body landmarks
 - hand landmarks
 - hand boxes
+- joint maps
 ```
 
 See [args.md](https://github.com/HrithvikM23/Kinara/blob/kinara/cortex/args.md) for host/port flags.
@@ -312,6 +313,12 @@ Two-person tracking with identity hints:
 py main.py --source ".\two_people.mp4" --model yolo11x-pose.pt --max-people 2 --identity person1=black,orange --identity person2=gray,silver
 ```
 
+Multi-camera fused tracking from the CLI:
+
+```bash
+py main.py --source FRONT=".\front.mp4" --source LEFT=".\left.mp4" --max-people 2 --camera-calibration ".\calibration.json"
+```
+
 All CLI arguments are documented in [args.md](https://github.com/HrithvikM23/Kinara/blob/kinara/cortex/args.md).
 
 ---
@@ -326,36 +333,32 @@ All CLI arguments are documented in [args.md](https://github.com/HrithvikM23/Kin
 | Camera role selection               | Complete |
 | Multi-camera synchronized input     | Complete |
 | YOLO single-person body tracking    | Complete |
-| YOLO multi-person body tracking     | Working  |
+| YOLO multi-person body tracking     | Complete |
 | ONNX hand tracking                  | Complete |
-| Clothing color identity hints       | Working  |
-| Cross-person hand guard             | Working  |
+| Clothing color identity hints       | Complete |
+| Cross-person hand guard             | Complete |
 | Automatic model download to models/ | Complete |
 | Stack-safe output naming            | Complete |
 | Temporal smoothing                  | Complete |
 | Rendered output video               | Complete |
 | JSON export generation              | Complete |
 | FBX export generation               | Complete |
-| Live UDP streaming                  | Working  |
-| Multi-person FBX export             | Planned  |
-| Calibration-aware 3D fusion         | Planned  |
-| Multi-camera + multi-person         | Planned  |
+| Live UDP streaming                  | Complete |
+| Multi-person FBX export             | Complete |
+| Calibration-aware 3D fusion         | Working  |
+| Multi-camera + multi-person         | Complete |
 
 ---
 
 # Roadmap
 
-## Multi-Person Export
-
-Add stable per-person FBX export once the current identity and hand ownership path is fully validated.
-
 ## 3D Fusion
 
-Add calibration-aware multi-camera fusion with true cross-view geometry instead of shared 2D reference-space blending.
+Improve the current view-aware depth estimation into stronger calibration-driven reconstruction once measured camera rigs are available.
 
 ## Runtime Streaming
 
-Keep the current UDP live-motion path and add an Unreal-side receiver/parser workflow once the packet schema stabilizes.
+Keep the current UDP live-motion path and add an Unreal-side receiver/parser workflow around the v2 packet schema.
 
 ---
 

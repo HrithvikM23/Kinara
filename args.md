@@ -4,7 +4,8 @@
 
 `--source`  
 Function: Selects the input source.  
-Accepted values: webcam index like `0`, `1`, `2` or a path to a video file.
+Accepted values: webcam index like `0`, `1`, `2`, a path to a video file, or repeated labeled values like `FRONT=front.mp4` and `LEFT=left.mp4`.  
+Usage: repeat the argument for multi-camera runs.
 
 `--output`  
 Function: Sets the output video name template.  
@@ -140,6 +141,16 @@ Function: Hand ownership switch ratio during overlaps. Lower values are stricter
 Accepted range: float in `(0, 1]`.  
 Default: `0.90`
 
+`--camera-calibration`  
+Function: Loads an optional JSON file with per-camera fusion calibration overrides.  
+Accepted values: path to a JSON object keyed by camera label such as `FRONT`, `LEFT`, `RIGHT`, `BACK`.  
+Notes: Supported numeric fields are currently `depth_sign` and `depth_scale`.
+
+`--fused-depth-scale`  
+Function: Scales the estimated multi-camera depth used in fused 3D joint exports.  
+Accepted range: float `> 0`.  
+Default: `1.0`
+
 `--yolo-tracker`  
 Function: Sets the Ultralytics tracker config used for multi-person tracking.  
 Accepted values: tracker config names like `botsort.yaml` or `bytetrack.yaml`.  
@@ -166,6 +177,7 @@ Default: `9000`
 Function: Enables live UDP sending.  
 Accepted values: flag only.  
 Default: disabled
+Notes: Live UDP now sends the `kinara-live-v2` schema with frame metadata, fused camera view labels, and joint maps when available.
 
 ## Preview and Video Writer
 
