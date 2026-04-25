@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import argparse
 import cv2
-import tkinter as tk
 from dataclasses import dataclass
-from tkinter import filedialog
 from pathlib import Path
 from typing import Any
 
@@ -13,10 +11,16 @@ from config import PipelineConfig
 from inference.rtmpose import ONNXPoseHandRunner
 from network.osc_sender import OSCSender
 from pipeline.pipeline import PoseHandPipeline
-from utils.exports import build_joint_map, export_motion_fbx, export_motion_json, export_multi_person_json
-from utils.fusion import fuse_body_views, fuse_hand_views
+from utils.exports import (
+    build_joint_map,
+    export_motion_fbx,
+    export_motion_json,
+    export_multi_person_fbx_bundle,
+    export_multi_person_json,
+)
+from utils.fusion import estimate_joint_depths, fuse_body_views, fuse_hand_views, load_camera_calibrations
 from utils.model_assets import DEFAULT_BODY_MODEL, HAND_MODEL_SPECS, ensure_body_model_file, ensure_model_file
-from utils.multi_person import MultiPersonTracker
+from utils.multi_person import MultiPersonTracker, PersonTrack
 from utils.smoothing import LandmarkSmoother
 
 
@@ -25,6 +29,7 @@ CAMERA_POSITION_OPTIONS = {
     "2": "LEFT",
     "3": "RIGHT",
 }
+DEFAULT_MULTI_SOURCE_LABELS = ("FRONT", "BACK", "LEFT", "RIGHT")
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +82,13 @@ def prepare_model_assets(config: PipelineConfig) -> None:
 
 
 def choose_video_gui(title: str = "Select Video File") -> str | None:
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except ModuleNotFoundError:
+        print("Error: tkinter is not available in this Python environment.")
+        return None
+
     root = tk.Tk()
     root.withdraw()
     root.attributes("-topmost", True)
@@ -164,16 +176,45 @@ def choose_camera_assignments_gui() -> list[InputAssignment]:
 
 
 def resolve_sources(args: argparse.Namespace) -> list[InputAssignment]:
-    # CLI: --source 0  or  --source path/to/video.mp4
+    # CLI: --source 0 or --source path/to/video.mp4 or repeated --source FRONT=path --source LEFT=path
     if args.source is not None:
-        s = args.source.strip()
-        if s.isdigit():
-            return [InputAssignment(label="FRONT", source=int(s))]
-        p = Path(s)
-        if not p.exists():
-            print(f"Error: file not found: {p}")
-            return []
-        return [InputAssignment(label="FRONT", source=p)]
+        raw_sources = args.source if isinstance(args.source, list) else [args.source]
+        assignments: list[InputAssignment] = []
+        used_labels: set[str] = set()
+        auto_labels = iter(DEFAULT_MULTI_SOURCE_LABELS)
+
+        for raw_source in raw_sources:
+            source_text = raw_source.strip()
+            label: str | None = None
+            value_text = source_text
+            if "=" in source_text:
+                raw_label, raw_value = source_text.split("=", 1)
+                label = sanitize_label(raw_label).upper()
+                value_text = raw_value.strip()
+
+            if label is None:
+                try:
+                    label = next(auto_labels)
+                except StopIteration:
+                    print("Error: too many unlabeled sources. Use LABEL=path for additional inputs.")
+                    return []
+
+            if label in used_labels:
+                print(f"Error: duplicate source label: {label}")
+                return []
+            used_labels.add(label)
+
+            if value_text.isdigit():
+                assignments.append(InputAssignment(label=label, source=int(value_text)))
+                continue
+
+            path = Path(value_text)
+            if not path.exists():
+                print(f"Error: file not found: {path}")
+                return []
+            assignments.append(InputAssignment(label=label, source=path))
+
+        return assignments
 
     # Interactive prompt
     print("Select input source:")
@@ -196,6 +237,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Pose and Hand Landmark Pipeline")
     parser.add_argument(
         "--source",
+        action="append",
         help="Webcam index (e.g. 0) or path to a video file. If omitted, an interactive prompt runs.",
     )
     parser.add_argument(
@@ -327,6 +369,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.90,
         help="Hand ownership switch ratio. Lower values are stricter during crossings.",
+    )
+    parser.add_argument(
+        "--camera-calibration",
+        type=Path,
+        help="Optional JSON file with per-camera fusion calibration overrides.",
+    )
+    parser.add_argument(
+        "--fused-depth-scale",
+        type=float,
+        default=1.0,
+        help="Depth scale multiplier used when estimating fused multi-camera joint depth.",
     )
     parser.add_argument(
         "--yolo-tracker",
@@ -536,6 +589,9 @@ def validate_config(config: PipelineConfig) -> bool:
     if config.person_match_threshold <= 0:
         print(f"Error: person_match_threshold must be positive: {config.person_match_threshold}")
         return False
+    if config.fused_depth_scale <= 0:
+        print(f"Error: fused_depth_scale must be positive: {config.fused_depth_scale}")
+        return False
     return True
 
 
@@ -602,6 +658,8 @@ def build_config_for_assignment(args: argparse.Namespace, assignment: InputAssig
         person_track_hold_frames=args.person_track_hold_frames,
         person_match_threshold=args.person_match_threshold,
         person_cross_wrist_ratio=args.person_cross_wrist_ratio,
+        camera_calibration_path=args.camera_calibration,
+        fused_depth_scale=args.fused_depth_scale,
         yolo_tracker=args.yolo_tracker,
         yolo_device=args.yolo_device,
         identity_hints=dict(args.identity_hints or []),
@@ -661,10 +719,136 @@ def build_fused_config(args: argparse.Namespace, assignments: list[InputAssignme
         person_track_hold_frames=args.person_track_hold_frames,
         person_match_threshold=args.person_match_threshold,
         person_cross_wrist_ratio=args.person_cross_wrist_ratio,
+        camera_calibration_path=args.camera_calibration,
+        fused_depth_scale=args.fused_depth_scale,
         yolo_tracker=args.yolo_tracker,
         yolo_device=args.yolo_device,
         identity_hints=dict(args.identity_hints or []),
     )
+
+
+def _color_similarity(profile_a: dict[str, float], profile_b: dict[str, float]) -> float:
+    if not profile_a or not profile_b:
+        return 0.0
+    keys = set(profile_a) | set(profile_b)
+    overlap = 0.0
+    magnitude = 0.0
+    for key in keys:
+        overlap += min(profile_a.get(key, 0.0), profile_b.get(key, 0.0))
+        magnitude += max(profile_a.get(key, 0.0), profile_b.get(key, 0.0))
+    if magnitude <= 0.0:
+        return 0.0
+    return overlap / magnitude
+
+
+def _track_sort_key(track: PersonTrack) -> tuple[int, float]:
+    return (0 if track.label else 1, track.center[0])
+
+
+def _person_key(track: PersonTrack, fallback_index: int) -> str:
+    if track.label:
+        return track.label
+    if track.id > 0:
+        return f"person{track.id}"
+    return f"person{fallback_index + 1}"
+
+
+def _align_people_across_cameras(
+    camera_tracks: dict[str, list[PersonTrack]],
+    reference_label: str,
+) -> dict[str, dict[str, PersonTrack]]:
+    grouped: dict[str, dict[str, PersonTrack]] = {}
+    reference_tracks = sorted(camera_tracks.get(reference_label, []), key=_track_sort_key)
+    reference_keys: list[str] = []
+
+    for index, track in enumerate(reference_tracks):
+        key = _person_key(track, index)
+        reference_keys.append(key)
+        grouped.setdefault(key, {})[reference_label] = track
+
+    for camera_label, tracks in camera_tracks.items():
+        if camera_label == reference_label:
+            continue
+
+        remaining_tracks = sorted(tracks, key=_track_sort_key)
+        assigned_keys: set[str] = set()
+
+        for track in list(remaining_tracks):
+            if track.label and track.label in grouped:
+                grouped.setdefault(track.label, {})[camera_label] = track
+                assigned_keys.add(track.label)
+                remaining_tracks.remove(track)
+
+        open_reference_keys = [key for key in reference_keys if key not in assigned_keys]
+        still_unmatched = list(remaining_tracks)
+        while still_unmatched and open_reference_keys:
+            scored_pairs: list[tuple[float, int, int]] = []
+            for track_index, track in enumerate(still_unmatched):
+                for key_index, key in enumerate(open_reference_keys):
+                    reference_track = grouped.get(key, {}).get(reference_label)
+                    if reference_track is None:
+                        continue
+                    score = _color_similarity(reference_track.color_signature, track.color_signature)
+                    scored_pairs.append((score, track_index, key_index))
+            if not scored_pairs:
+                break
+            _, track_index, key_index = max(scored_pairs)
+            key = open_reference_keys.pop(key_index)
+            track = still_unmatched.pop(track_index)
+            grouped.setdefault(key, {})[camera_label] = track
+            assigned_keys.add(key)
+
+        for key, track in zip(open_reference_keys, still_unmatched):
+            grouped.setdefault(key, {})[camera_label] = track
+            assigned_keys.add(key)
+
+        extra_index = 0
+        for track in still_unmatched[len(open_reference_keys):]:
+            while f"person{len(reference_keys) + extra_index + 1}" in grouped:
+                extra_index += 1
+            key = f"person{len(reference_keys) + extra_index + 1}"
+            grouped.setdefault(key, {})[camera_label] = track
+            extra_index += 1
+
+    return grouped
+
+
+def _build_person_payload(
+    person_id: int,
+    label: str,
+    body_points: list[tuple[int, int, float]],
+    hands_by_side: dict[str, dict],
+    joint_depths: dict[str, float] | None = None,
+    box: tuple[int, int, int, int] | None = None,
+    score: float | None = None,
+    camera_views: list[str] | None = None,
+) -> dict[str, object]:
+    return {
+        "id": person_id,
+        "label": label,
+        "box": box,
+        "score": score,
+        "camera_views": camera_views or [],
+        "body_points": body_points,
+        "hands_by_side": hands_by_side,
+        "joints": build_joint_map(body_points, hands_by_side, joint_depths=joint_depths),
+    }
+
+
+def _draw_person_overlay(frame, track_label: str, box: tuple[int, int, int, int], score: float | None = None) -> None:
+    x1, y1, x2, y2 = box
+    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 200, 255), 2)
+    label_text = track_label if score is None else f"{track_label} {score:.2f}"
+    cv2.putText(frame, label_text, (x1, max(20, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
+
+
+def _box_from_body_points(points: list[tuple[int, int, float]], threshold: float) -> tuple[int, int, int, int] | None:
+    confident_points = [(x, y) for x, y, conf in points if conf > threshold]
+    if not confident_points:
+        return None
+    xs = [point[0] for point in confident_points]
+    ys = [point[1] for point in confident_points]
+    return min(xs), min(ys), max(xs), max(ys)
 
 
 def run_multi_person_assignment(config: PipelineConfig) -> None:
@@ -699,22 +883,28 @@ def run_multi_person_assignment(config: PipelineConfig) -> None:
             payload_people: list[dict[str, object]] = []
             for track in people:
                 track.pipeline.render_pose(frame, track.body_points, track.hands_by_side, send_osc=False)
-                x1, y1, x2, y2 = track.box
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 200, 255), 2)
                 label = track.label or f"person{track.id}"
-                cv2.putText(frame, label, (x1, max(20, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
+                _draw_person_overlay(frame, label, track.box, track.detection_score)
                 payload_people.append(
-                    {
-                        "id": track.id,
-                        "label": label,
-                        "box": track.box,
-                        "body_points": track.body_points,
-                        "hands_by_side": track.hands_by_side,
-                        "joints": build_joint_map(track.body_points, track.hands_by_side),
-                    }
+                    _build_person_payload(
+                        person_id=track.id,
+                        label=label,
+                        box=track.box,
+                        score=track.detection_score,
+                        body_points=track.body_points,
+                        hands_by_side=track.hands_by_side,
+                        camera_views=["FRONT"],
+                    )
                 )
 
-            osc_sender.send_people(payload_people)
+            osc_sender.send_people(
+                payload_people,
+                metadata={
+                    "frame_index": frame_index,
+                    "mode": "multi_person",
+                    "source": str(config.video_path),
+                },
+            )
             motion_frames.append({"frame_index": frame_index, "people": payload_people})
             frame_index += 1
             session.write(frame)
@@ -739,9 +929,11 @@ def run_multi_person_assignment(config: PipelineConfig) -> None:
             "identity_hints": {key: list(value) for key, value in config.identity_hints.items()},
         },
     )
+    exported_fbx_paths = export_multi_person_fbx_bundle(config.fbx_output_path, session.fps, motion_frames)
     print(f"Saved: {config.output_path}")
     print(f"Saved: {config.json_output_path}")
-    print("Skipped FBX export for multi-person mode.")
+    for exported_path in exported_fbx_paths:
+        print(f"Saved: {exported_path}")
 
 
 def run_assignment(config: PipelineConfig) -> None:
@@ -783,11 +975,22 @@ def run_assignment(config: PipelineConfig) -> None:
                 break
 
             body_points, hands_by_side = pipeline.detect_pose(frame)
-            pipeline.render_pose(frame, body_points, hands_by_side)
+            joints = build_joint_map(body_points, hands_by_side)
+            pipeline.render_pose(frame, body_points, hands_by_side, send_osc=False)
+            osc_sender.send_pose(
+                body_points,
+                hands_by_side,
+                joints=joints,
+                metadata={
+                    "frame_index": frame_index,
+                    "mode": "single",
+                    "source": str(config.video_path),
+                },
+            )
             motion_frames.append(
                 {
                     "frame_index": frame_index,
-                    "joints": build_joint_map(body_points, hands_by_side),
+                    "joints": joints,
                 }
             )
             frame_index += 1
@@ -832,6 +1035,12 @@ def run_fused_assignments(
     if not validate_config(config):
         return
 
+    try:
+        calibrations = load_camera_calibrations(config.camera_calibration_path)
+    except Exception as exc:
+        print(f"Error: failed to load camera calibration: {exc}")
+        return
+
     sources: dict[str, VideoInputSource] = {}
     osc_sender = OSCSender(config.osc_host, config.osc_port, config.osc_enabled)
     writer: VideoOutputWriter | None = None
@@ -856,11 +1065,15 @@ def run_fused_assignments(
         )
 
         runner = ONNXPoseHandRunner(config)
-        camera_pipelines = {
+        single_view_pipelines = {
             label: PoseHandPipeline(config, runner, LandmarkSmoother(config), OSCSender(enabled=False))
             for label in sources
         }
-        fused_renderer = PoseHandPipeline(config, runner, LandmarkSmoother(config), osc_sender)
+        multi_person_trackers = {
+            label: MultiPersonTracker(config, runner)
+            for label in sources
+        }
+        fused_renderers: dict[str, PoseHandPipeline] = {}
 
         while True:
             frames_by_label: dict[str, Any] = {}
@@ -873,42 +1086,150 @@ def run_fused_assignments(
             if finished:
                 break
 
-            camera_bodies: dict[str, list[tuple[int, int, float]]] = {}
-            camera_hands: dict[str, dict[str, dict]] = {}
-            for label, frame in frames_by_label.items():
-                body_points, hands_by_side = camera_pipelines[label].detect_pose(frame)
-                camera_bodies[label] = body_points
-                camera_hands[label] = hands_by_side
-
-            fused_body = fuse_body_views(camera_bodies, config.body_conf_threshold, reference_label=reference_label)
-            if fused_body is not None:
-                fused_body = fused_renderer.smoother.smooth_body(fused_body)
-            if fused_body is None:
-                fused_body = [(0, 0, 0.0) for _ in range(17)]
-
-            fused_hands = {}
-            for side in ("left", "right"):
-                side_views = {
-                    label: hands_by_side[side]
-                    for label, hands_by_side in camera_hands.items()
-                    if side in hands_by_side
-                }
-                fused_hand = fuse_hand_views(side_views, config.hand_kp_threshold, reference_label=reference_label)
-                if fused_hand is None:
-                    continue
-                smoothed_points = fused_renderer.smoother.smooth_hand(side, fused_hand["points"])
-                if smoothed_points is None:
-                    continue
-                fused_hands[side] = {"box": fused_hand["box"], "points": smoothed_points}
-
             canvas = frames_by_label[reference_label].copy()
-            fused_renderer.render_pose(canvas, fused_body, fused_hands, send_osc=True)
-            motion_frames.append(
-                {
-                    "frame_index": frame_index,
-                    "joints": build_joint_map(fused_body, fused_hands),
+
+            if config.max_people > 1:
+                camera_tracks = {
+                    label: multi_person_trackers[label].update(frame)
+                    for label, frame in frames_by_label.items()
                 }
-            )
+                grouped_people = _align_people_across_cameras(camera_tracks, reference_label)
+                payload_people: list[dict[str, object]] = []
+
+                for person_index, (person_key, views) in enumerate(grouped_people.items(), start=1):
+                    camera_bodies = {
+                        label: track.body_points
+                        for label, track in views.items()
+                        if track.body_points
+                    }
+                    camera_hands = {
+                        label: track.hands_by_side
+                        for label, track in views.items()
+                    }
+                    if not camera_bodies:
+                        continue
+
+                    renderer = fused_renderers.setdefault(
+                        person_key,
+                        PoseHandPipeline(config, runner, LandmarkSmoother(config), OSCSender(enabled=False)),
+                    )
+                    fused_body = fuse_body_views(camera_bodies, config.body_conf_threshold, reference_label=reference_label)
+                    if fused_body is not None:
+                        fused_body = renderer.smoother.smooth_body(fused_body)
+                    if fused_body is None:
+                        continue
+
+                    fused_hands: dict[str, dict] = {}
+                    for side in ("left", "right"):
+                        side_views = {
+                            label: hands_by_side[side]
+                            for label, hands_by_side in camera_hands.items()
+                            if side in hands_by_side
+                        }
+                        fused_hand = fuse_hand_views(side_views, config.hand_kp_threshold, reference_label=reference_label)
+                        if fused_hand is None:
+                            continue
+                        smoothed_points = renderer.smoother.smooth_hand(side, fused_hand["points"])
+                        if smoothed_points is None:
+                            continue
+                        fused_hands[side] = {"box": fused_hand["box"], "points": smoothed_points}
+
+                    renderer.render_pose(canvas, fused_body, fused_hands, send_osc=False)
+                    label = next((track.label for track in views.values() if track.label), person_key)
+                    box = _box_from_body_points(fused_body, config.body_conf_threshold)
+                    if box is not None:
+                        best_score = max(track.detection_score for track in views.values())
+                        _draw_person_overlay(canvas, label, box, best_score)
+                    joint_depths = estimate_joint_depths(
+                        camera_bodies=camera_bodies,
+                        camera_hands=camera_hands,
+                        body_threshold=config.body_conf_threshold,
+                        hand_threshold=config.hand_kp_threshold,
+                        calibrations=calibrations,
+                        depth_scale=config.fused_depth_scale,
+                    )
+                    payload_people.append(
+                        _build_person_payload(
+                            person_id=person_index,
+                            label=label,
+                            box=box,
+                            score=max(track.detection_score for track in views.values()),
+                            body_points=fused_body,
+                            hands_by_side=fused_hands,
+                            joint_depths=joint_depths,
+                            camera_views=sorted(views),
+                        )
+                    )
+
+                osc_sender.send_people(
+                    payload_people,
+                    metadata={
+                        "frame_index": frame_index,
+                        "mode": "fused_multi_person",
+                        "camera_labels": list(frames_by_label),
+                    },
+                )
+                motion_frames.append({"frame_index": frame_index, "people": payload_people})
+            else:
+                camera_bodies: dict[str, list[tuple[int, int, float]]] = {}
+                camera_hands: dict[str, dict[str, dict]] = {}
+                for label, frame in frames_by_label.items():
+                    body_points, hands_by_side = single_view_pipelines[label].detect_pose(frame)
+                    camera_bodies[label] = body_points
+                    camera_hands[label] = hands_by_side
+
+                renderer = fused_renderers.setdefault(
+                    "single",
+                    PoseHandPipeline(config, runner, LandmarkSmoother(config), OSCSender(enabled=False)),
+                )
+                fused_body = fuse_body_views(camera_bodies, config.body_conf_threshold, reference_label=reference_label)
+                if fused_body is not None:
+                    fused_body = renderer.smoother.smooth_body(fused_body)
+                if fused_body is None:
+                    fused_body = [(0, 0, 0.0) for _ in range(17)]
+
+                fused_hands: dict[str, dict] = {}
+                for side in ("left", "right"):
+                    side_views = {
+                        label: hands_by_side[side]
+                        for label, hands_by_side in camera_hands.items()
+                        if side in hands_by_side
+                    }
+                    fused_hand = fuse_hand_views(side_views, config.hand_kp_threshold, reference_label=reference_label)
+                    if fused_hand is None:
+                        continue
+                    smoothed_points = renderer.smoother.smooth_hand(side, fused_hand["points"])
+                    if smoothed_points is None:
+                        continue
+                    fused_hands[side] = {"box": fused_hand["box"], "points": smoothed_points}
+
+                joint_depths = estimate_joint_depths(
+                    camera_bodies=camera_bodies,
+                    camera_hands=camera_hands,
+                    body_threshold=config.body_conf_threshold,
+                    hand_threshold=config.hand_kp_threshold,
+                    calibrations=calibrations,
+                    depth_scale=config.fused_depth_scale,
+                )
+                joints = build_joint_map(fused_body, fused_hands, joint_depths=joint_depths)
+                renderer.render_pose(canvas, fused_body, fused_hands, send_osc=False)
+                osc_sender.send_pose(
+                    fused_body,
+                    fused_hands,
+                    joints=joints,
+                    metadata={
+                        "frame_index": frame_index,
+                        "mode": "fused",
+                        "camera_labels": list(frames_by_label),
+                    },
+                )
+                motion_frames.append(
+                    {
+                        "frame_index": frame_index,
+                        "joints": joints,
+                    }
+                )
+
             frame_index += 1
             writer.write(canvas)
 
@@ -924,6 +1245,27 @@ def run_fused_assignments(
         osc_sender.close()
         cv2.destroyAllWindows()
 
+    if config.max_people > 1:
+        export_multi_person_json(
+            config.json_output_path,
+            fps=export_fps,
+            frames=motion_frames,
+            metadata={
+                "mode": "fused_multi_person",
+                "camera_labels": [assignment.label for assignment in assignments],
+                "sources": {assignment.label: str(assignment.source) for assignment in assignments},
+                "body_model_variant": config.body_model_variant,
+                "hand_model_variant": config.hand_model_variant,
+                "camera_calibration_path": None if config.camera_calibration_path is None else str(config.camera_calibration_path),
+            },
+        )
+        exported_fbx_paths = export_multi_person_fbx_bundle(config.fbx_output_path, export_fps, motion_frames)
+        print(f"Saved: {config.output_path}")
+        print(f"Saved: {config.json_output_path}")
+        for exported_path in exported_fbx_paths:
+            print(f"Saved: {exported_path}")
+        return
+
     export_motion_bundle(
         config,
         fps=export_fps,
@@ -934,6 +1276,7 @@ def run_fused_assignments(
             "sources": {assignment.label: str(assignment.source) for assignment in assignments},
             "body_model_variant": config.body_model_variant,
             "hand_model_variant": config.hand_model_variant,
+            "camera_calibration_path": None if config.camera_calibration_path is None else str(config.camera_calibration_path),
         },
     )
     print(f"Saved: {config.output_path}")
@@ -950,9 +1293,6 @@ def main() -> None:
         return
 
     if len(assignments) > 1:
-        if args.max_people > 1:
-            print("Error: multi-person tracking is currently supported only for a single camera/source.")
-            return
         print("Running synchronized multi-camera fusion...")
         run_fused_assignments(assignments, args)
         return

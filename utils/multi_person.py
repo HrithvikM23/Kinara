@@ -14,6 +14,7 @@ from utils.smoothing import LandmarkSmoother
 
 Point = tuple[int, int, float]
 Box = tuple[int, int, int, int]
+ColorProfile = dict[str, float]
 
 COLOR_HSV_RANGES: dict[str, tuple[tuple[int, int, int], tuple[int, int, int]]] = {
     "black": ((0, 0, 0), (180, 255, 60)),
@@ -50,10 +51,14 @@ class PersonTrack:
     id: int
     box: Box
     pipeline: PoseHandPipeline
+    tracker_id: int | None = None
     missed_frames: int = 0
     label: str | None = None
     body_points: list[Point] = field(default_factory=list)
     hands_by_side: dict[str, dict] = field(default_factory=dict)
+    velocity: tuple[float, float] = (0.0, 0.0)
+    color_signature: ColorProfile = field(default_factory=dict)
+    detection_score: float = 0.0
 
     @property
     def center(self) -> tuple[float, float]:
@@ -84,6 +89,14 @@ def _center_distance_score(box_a: Box, box_b: Box) -> float:
     distance = math.hypot(ax - bx, ay - by)
     scale = max(box_a[2] - box_a[0], box_a[3] - box_a[1], box_b[2] - box_b[0], box_b[3] - box_b[1], 1)
     return max(0.0, 1.0 - distance / (scale * 2.0))
+
+
+def _size_similarity_score(box_a: Box, box_b: Box) -> float:
+    area_a = max((box_a[2] - box_a[0]) * (box_a[3] - box_a[1]), 1)
+    area_b = max((box_b[2] - box_b[0]) * (box_b[3] - box_b[1]), 1)
+    smaller = min(area_a, area_b)
+    larger = max(area_a, area_b)
+    return float(smaller) / float(larger)
 
 
 def _non_max_suppress(boxes_with_weights: list[tuple[Box, float]], iou_threshold: float = 0.35) -> list[Box]:
@@ -135,6 +148,32 @@ def _color_scores(frame, box: Box) -> dict[str, float]:
         mask = cv2.inRange(hsv, lower_np, upper_np)
         scores[color_name] = float(cv2.countNonZero(mask)) / float(pixel_count)
     return scores
+
+
+def _blend_color_scores(previous: ColorProfile, current: ColorProfile, alpha: float = 0.45) -> ColorProfile:
+    if not previous:
+        return dict(current)
+    blended: ColorProfile = {}
+    all_keys = set(previous) | set(current)
+    for key in all_keys:
+        blended[key] = previous.get(key, 0.0) * (1.0 - alpha) + current.get(key, 0.0) * alpha
+    return blended
+
+
+def _color_profile_similarity(profile_a: ColorProfile, profile_b: ColorProfile) -> float:
+    if not profile_a or not profile_b:
+        return 0.0
+    shared_keys = set(profile_a) | set(profile_b)
+    overlap = 0.0
+    magnitude = 0.0
+    for key in shared_keys:
+        value_a = profile_a.get(key, 0.0)
+        value_b = profile_b.get(key, 0.0)
+        overlap += min(value_a, value_b)
+        magnitude += max(value_a, value_b)
+    if magnitude <= 0:
+        return 0.0
+    return overlap / magnitude
 
 
 def _translate_body_points(points: list[Point], offset_x: int, offset_y: int) -> list[Point]:
@@ -225,7 +264,7 @@ class MultiPersonTracker:
             if track.label:
                 assigned_labels.add(track.label)
 
-        self._tracks = updated_tracks[: self.config.max_people]
+        self._tracks = self._enforce_unique_labels(updated_tracks[: self.config.max_people])
 
     def _create_track(self) -> PersonTrack:
         track = PersonTrack(
@@ -242,9 +281,15 @@ class MultiPersonTracker:
         return track
 
     def _match_score(self, track: PersonTrack, detection: PersonDetection) -> float:
-        if detection.track_id is not None and detection.track_id == track.id:
+        if detection.track_id is not None and detection.track_id == track.tracker_id:
             return 10.0
-        score = _iou(track.box, detection.box) * 0.65 + _center_distance_score(track.box, detection.box) * 0.35
+        predicted_box = self._predict_track_box(track)
+        score = (
+            _iou(predicted_box, detection.box) * 0.40
+            + _center_distance_score(predicted_box, detection.box) * 0.20
+            + _size_similarity_score(predicted_box, detection.box) * 0.10
+            + _color_profile_similarity(track.color_signature, detection.color_scores) * 0.30
+        )
         if track.label:
             score += self._identity_score(track.label, detection.color_scores) * 0.5
         return score
@@ -270,50 +315,129 @@ class MultiPersonTracker:
         return sum(color_scores.get(color, 0.0) for color in colors) / float(len(colors))
 
     def _update_track_from_detection(self, track: PersonTrack, detection: PersonDetection, frame) -> None:
+        previous_center = track.center
         body_points = detection.body_points
         hands_by_side = track.pipeline.detect_hands(frame, body_points)
-        track.id = detection.track_id if detection.track_id is not None else track.id
+        current_center = ((detection.box[0] + detection.box[2]) * 0.5, (detection.box[1] + detection.box[3]) * 0.5)
+        track.velocity = (
+            current_center[0] - previous_center[0],
+            current_center[1] - previous_center[1],
+        )
         track.box = detection.box
+        track.tracker_id = detection.track_id
         track.missed_frames = 0
         track.body_points = body_points
         track.hands_by_side = hands_by_side
+        track.color_signature = _blend_color_scores(track.color_signature, detection.color_scores)
+        track.detection_score = detection.score
+        self._refresh_track_label(track, detection)
 
-    def _resolve_cross_person_hands(self) -> None:
+    def _enforce_unique_labels(self, tracks: list[PersonTrack]) -> list[PersonTrack]:
+        label_groups: dict[str, list[PersonTrack]] = {}
+        for track in tracks:
+            if track.label:
+                label_groups.setdefault(track.label, []).append(track)
+
+        for label, grouped_tracks in label_groups.items():
+            if len(grouped_tracks) <= 1:
+                continue
+            grouped_tracks.sort(
+                key=lambda track: (
+                    self._identity_score(label, track.color_signature),
+                    track.detection_score,
+                ),
+                reverse=True,
+            )
+            for duplicate_track in grouped_tracks[1:]:
+                duplicate_track.label = None
+        return tracks
+
+    def _predict_track_box(self, track: PersonTrack) -> Box:
+        vx, vy = track.velocity
+        x1, y1, x2, y2 = track.box
+        return (
+            int(round(x1 + vx)),
+            int(round(y1 + vy)),
+            int(round(x2 + vx)),
+            int(round(y2 + vy)),
+        )
+
+    def _refresh_track_label(self, track: PersonTrack, detection: PersonDetection) -> None:
+        if not self.config.identity_hints:
+            return
+        candidate_scores = {
+            label: self._identity_score(label, detection.color_scores)
+            for label in self.config.identity_hints
+        }
+        best_label = max(candidate_scores, key=candidate_scores.get, default=None)
+        if best_label is None:
+            return
+        best_score = candidate_scores[best_label]
+        if best_score < self.config.identity_min_score:
+            return
+        if track.label is None:
+            track.label = best_label
+            return
+        current_score = candidate_scores.get(track.label, 0.0)
+        if best_label != track.label and best_score > current_score + 0.05:
+            track.label = best_label
+
+    def _hand_owner_score(self, track: PersonTrack, side: str, hand_payload: dict) -> float:
         side_indices = {
             "left": (9, 7),
             "right": (10, 8),
         }
+        wrist_index, elbow_index = side_indices[side]
+        if len(track.body_points) <= wrist_index:
+            return -1.0
+
+        wrist = track.body_points[wrist_index]
+        elbow = track.body_points[elbow_index]
+        if wrist[2] <= self.config.body_conf_threshold or elbow[2] <= self.config.body_conf_threshold:
+            return -1.0
+
+        hand_wrist = hand_payload["points"][0]
+        hx = (hand_payload["box"][0] + hand_payload["box"][2]) * 0.5
+        hy = (hand_payload["box"][1] + hand_payload["box"][3]) * 0.5
+        wrist_distance = math.hypot(hand_wrist[0] - wrist[0], hand_wrist[1] - wrist[1])
+        elbow_distance = math.hypot(hand_wrist[0] - elbow[0], hand_wrist[1] - elbow[1])
+        body_scale = max(track.box[2] - track.box[0], track.box[3] - track.box[1], 1)
+        inside_box = 1.0 if track.box[0] <= hx <= track.box[2] and track.box[1] <= hy <= track.box[3] else 0.0
+        return (
+            max(0.0, 1.0 - wrist_distance / float(body_scale)) * 0.55
+            + max(0.0, 1.0 - elbow_distance / float(body_scale * 1.35)) * 0.20
+            + _iou(track.box, hand_payload["box"]) * 0.15
+            + inside_box * 0.10
+        )
+
+    def _resolve_cross_person_hands(self) -> None:
         active_tracks = [track for track in self._tracks if track.missed_frames == 0 and len(track.body_points) >= 11]
         for track in active_tracks:
             for side, hand_payload in list(track.hands_by_side.items()):
-                wrist_index, elbow_index = side_indices[side]
-                owner_wrist = track.body_points[wrist_index]
-                owner_elbow = track.body_points[elbow_index]
-                if owner_wrist[2] <= self.config.body_conf_threshold or owner_elbow[2] <= self.config.body_conf_threshold:
+                wrist_index, elbow_index = {"left": (9, 7), "right": (10, 8)}[side]
+                owner_score = self._hand_owner_score(track, side, hand_payload)
+                if owner_score < 0:
                     continue
 
-                hand_wrist = hand_payload["points"][0]
-                owner_distance = math.hypot(hand_wrist[0] - owner_wrist[0], hand_wrist[1] - owner_wrist[1])
                 closest_track = track
-                closest_distance = owner_distance
+                best_score = owner_score
 
                 for other_track in active_tracks:
                     if other_track.id == track.id or len(other_track.body_points) <= wrist_index:
                         continue
-                    other_wrist = other_track.body_points[wrist_index]
-                    if other_wrist[2] <= self.config.body_conf_threshold:
-                        continue
-                    other_distance = math.hypot(hand_wrist[0] - other_wrist[0], hand_wrist[1] - other_wrist[1])
-                    if other_distance < closest_distance:
-                        closest_distance = other_distance
+                    other_score = self._hand_owner_score(other_track, side, hand_payload)
+                    if other_score > best_score:
+                        best_score = other_score
                         closest_track = other_track
 
                 if closest_track.id == track.id:
                     continue
 
-                if closest_distance > owner_distance * self.config.person_cross_wrist_ratio:
+                if best_score <= owner_score / max(self.config.person_cross_wrist_ratio, 1e-6):
                     continue
 
+                owner_wrist = track.body_points[wrist_index]
+                owner_elbow = track.body_points[elbow_index]
                 fallback_hand = generate_default_hand(owner_wrist, owner_elbow, side, self.config)
                 track.hands_by_side[side] = {
                     "box": hand_payload["box"],

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -116,8 +117,8 @@ HAND_NAME_TO_INDEX = {
 }
 
 
-def _to_world(x: int, y: int) -> tuple[float, float, float]:
-    return float(x), float(-y), 0.0
+def _to_world(x: int, y: int, z: float = 0.0) -> tuple[float, float, float]:
+    return float(x), float(-y), float(z)
 
 
 def _average_points(points: list[tuple[int, int, float]]) -> tuple[float, float, float, float]:
@@ -132,18 +133,25 @@ def _zero_joint() -> dict[str, float]:
     return {"x": 0.0, "y": 0.0, "z": 0.0, "confidence": 0.0}
 
 
-def build_joint_map(body_points, hands_by_side) -> dict[str, dict[str, float]]:
+def build_joint_map(
+    body_points,
+    hands_by_side,
+    joint_depths: dict[str, float] | None = None,
+) -> dict[str, dict[str, float]]:
     joint_map: dict[str, dict[str, float]] = {joint.name: _zero_joint() for joint in SKELETON}
+    joint_depths = joint_depths or {}
 
     for name, index in BODY_NAME_TO_INDEX.items():
         x, y, conf = body_points[index]
-        wx, wy, wz = _to_world(x, y)
+        wx, wy, wz = _to_world(x, y, joint_depths.get(name, 0.0))
         joint_map[name] = {"x": wx, "y": wy, "z": wz, "confidence": float(conf)}
 
     hips = [body_points[11], body_points[12]]
     shoulders = [body_points[5], body_points[6]]
-    root_x, root_y, root_z, root_conf = _average_points(hips)
-    chest_x, chest_y, chest_z, chest_conf = _average_points(shoulders)
+    root_x, root_y, _, root_conf = _average_points(hips)
+    chest_x, chest_y, _, chest_conf = _average_points(shoulders)
+    root_z = float((joint_depths.get("LeftHip", 0.0) + joint_depths.get("RightHip", 0.0)) * 0.5)
+    chest_z = float((joint_depths.get("LeftShoulder", 0.0) + joint_depths.get("RightShoulder", 0.0)) * 0.5)
     joint_map["HipsRoot"] = {"x": root_x, "y": root_y, "z": root_z, "confidence": root_conf}
     joint_map["Chest"] = {"x": chest_x, "y": chest_y, "z": chest_z, "confidence": chest_conf}
 
@@ -153,7 +161,7 @@ def build_joint_map(body_points, hands_by_side) -> dict[str, dict[str, float]]:
         hand_points = hand_payload["points"]
         for suffix, index in HAND_NAME_TO_INDEX.items():
             x, y, conf = hand_points[index]
-            wx, wy, wz = _to_world(x, y)
+            wx, wy, wz = _to_world(x, y, joint_depths.get(f"{side_label}{suffix}", 0.0))
             joint_map[f"{side_label}{suffix}"] = {"x": wx, "y": wy, "z": wz, "confidence": float(conf)}
 
     return joint_map
@@ -322,6 +330,62 @@ def export_multi_person_json(
         "frames": frames,
     }
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _sanitize_person_label(label: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "_", label.strip())
+    cleaned = cleaned.strip("_")
+    return cleaned or "person"
+
+
+def _empty_joint_map() -> dict[str, dict[str, float]]:
+    return {joint.name: _zero_joint() for joint in SKELETON}
+
+
+def export_multi_person_fbx_bundle(
+    output_path: Path,
+    fps: float,
+    frames: list[dict[str, object]],
+) -> list[Path]:
+    if not frames:
+        return []
+
+    person_frames: dict[str, list[dict[str, object]]] = {}
+    person_labels_by_key: dict[str, str] = {}
+
+    for frame in frames:
+        frame_index = int(frame.get("frame_index", 0))
+        present_people = frame.get("people", [])
+        keyed_people: dict[str, dict[str, object]] = {}
+        if isinstance(present_people, list):
+            for person in present_people:
+                if not isinstance(person, dict):
+                    continue
+                label = str(person.get("label") or f"person{person.get('id', '0')}")
+                person_key = _sanitize_person_label(label)
+                person_labels_by_key[person_key] = label
+                joints = person.get("joints")
+                if isinstance(joints, dict):
+                    keyed_people[person_key] = cast(dict[str, object], joints)
+
+        for person_key in set(person_frames) | set(keyed_people):
+            joint_map = keyed_people.get(person_key, _empty_joint_map())
+            person_frames.setdefault(person_key, []).append(
+                {
+                    "frame_index": frame_index,
+                    "joints": joint_map,
+                }
+            )
+
+    exported_paths: list[Path] = []
+    suffix = output_path.suffix or ".fbx"
+    stem = output_path.stem
+    for person_key, person_motion_frames in person_frames.items():
+        person_output_path = output_path.with_name(f"{stem}_{person_key}{suffix}")
+        export_motion_fbx(person_output_path, fps, person_motion_frames)
+        exported_paths.append(person_output_path)
+
+    return exported_paths
 
 
 def _compute_offsets(first_local_frame: dict[str, dict[str, float]]) -> dict[str, tuple[float, float, float]]:

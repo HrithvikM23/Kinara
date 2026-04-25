@@ -39,6 +39,8 @@ class PipelineConfig:
     identity_min_score: float = 0.05
     person_match_threshold: float = 0.15
     person_cross_wrist_ratio: float = 0.90
+    camera_calibration_path: Path | None = None
+    fused_depth_scale: float = 1.0
     yolo_tracker: str = "botsort.yaml"
     yolo_device: str | None = None
     enable_preview: bool = True

@@ -27,13 +27,42 @@ class BodyDetection(TypedDict):
     body_points: list[tuple[int, int, float]]
 
 
+def _normalize_provider_name(value: str) -> str:
+    # Some Windows shells can inject control characters into argv values.
+    return "".join(character for character in value.strip() if character.isprintable())
+
+
+def _resolve_provider_names(config) -> list[str]:
+    available_providers = {
+        _normalize_provider_name(provider_name): provider_name
+        for provider_name in ort.get_available_providers()
+    }
+
+    requested_providers: list[str] = []
+    for provider_name in config.provider_names:
+        normalized_name = _normalize_provider_name(str(provider_name))
+        if not normalized_name:
+            continue
+        resolved_name = available_providers.get(normalized_name)
+        if resolved_name is not None and resolved_name not in requested_providers:
+            requested_providers.append(resolved_name)
+
+    if requested_providers:
+        return requested_providers
+
+    if "CPUExecutionProvider" in available_providers:
+        return [available_providers["CPUExecutionProvider"]]
+
+    return list(available_providers.values())
+
+
 class ONNXPoseHandRunner:
     def __init__(self, config):
         self.config = config
         self.body_model = YOLO(str(config.body_model_path))
         self.hand_session = ort.InferenceSession(
             str(config.hand_model_path),
-            providers=list(config.provider_names),
+            providers=_resolve_provider_names(config),
         )
 
     def detect_body(self, frame_bgr):

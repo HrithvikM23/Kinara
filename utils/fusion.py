@@ -1,14 +1,78 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
 
 BODY_TORSO_POINTS = (5, 6, 11, 12)
+BODY_JOINT_NAME_TO_INDEX = {
+    "LeftShoulder": 5,
+    "RightShoulder": 6,
+    "LeftElbow": 7,
+    "RightElbow": 8,
+    "LeftWrist": 9,
+    "RightWrist": 10,
+    "LeftHip": 11,
+    "RightHip": 12,
+    "LeftKnee": 13,
+    "RightKnee": 14,
+    "LeftAnkle": 15,
+    "RightAnkle": 16,
+}
+HAND_JOINT_NAME_TO_INDEX = {
+    "LeftThumb1": ("left", 1),
+    "LeftThumb2": ("left", 2),
+    "LeftThumb3": ("left", 3),
+    "LeftThumb4": ("left", 4),
+    "LeftIndex1": ("left", 5),
+    "LeftIndex2": ("left", 6),
+    "LeftIndex3": ("left", 7),
+    "LeftIndex4": ("left", 8),
+    "LeftMiddle1": ("left", 9),
+    "LeftMiddle2": ("left", 10),
+    "LeftMiddle3": ("left", 11),
+    "LeftMiddle4": ("left", 12),
+    "LeftRing1": ("left", 13),
+    "LeftRing2": ("left", 14),
+    "LeftRing3": ("left", 15),
+    "LeftRing4": ("left", 16),
+    "LeftPinky1": ("left", 17),
+    "LeftPinky2": ("left", 18),
+    "LeftPinky3": ("left", 19),
+    "LeftPinky4": ("left", 20),
+    "RightThumb1": ("right", 1),
+    "RightThumb2": ("right", 2),
+    "RightThumb3": ("right", 3),
+    "RightThumb4": ("right", 4),
+    "RightIndex1": ("right", 5),
+    "RightIndex2": ("right", 6),
+    "RightIndex3": ("right", 7),
+    "RightIndex4": ("right", 8),
+    "RightMiddle1": ("right", 9),
+    "RightMiddle2": ("right", 10),
+    "RightMiddle3": ("right", 11),
+    "RightMiddle4": ("right", 12),
+    "RightRing1": ("right", 13),
+    "RightRing2": ("right", 14),
+    "RightRing3": ("right", 15),
+    "RightRing4": ("right", 16),
+    "RightPinky1": ("right", 17),
+    "RightPinky2": ("right", 18),
+    "RightPinky3": ("right", 19),
+    "RightPinky4": ("right", 20),
+}
 CAMERA_VIEW_WEIGHTS = {
     "FRONT": 1.20,
     "BACK": 1.00,
     "LEFT": 1.05,
     "RIGHT": 1.05,
+}
+DEFAULT_CAMERA_CALIBRATIONS = {
+    "FRONT": {"depth_sign": 0.0, "depth_scale": 0.0},
+    "BACK": {"depth_sign": 0.0, "depth_scale": 0.0},
+    "LEFT": {"depth_sign": -1.0, "depth_scale": 1.0},
+    "RIGHT": {"depth_sign": 1.0, "depth_scale": 1.0},
 }
 
 
@@ -17,6 +81,25 @@ class FrameReference:
     origin_x: float
     origin_y: float
     scale: float
+
+
+def load_camera_calibrations(path: Path | None) -> dict[str, dict[str, float]]:
+    calibrations = {label: dict(values) for label, values in DEFAULT_CAMERA_CALIBRATIONS.items()}
+    if path is None:
+        return calibrations
+
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Calibration file must contain a JSON object keyed by camera label.")
+
+    for label, values in payload.items():
+        if not isinstance(label, str) or not isinstance(values, dict):
+            continue
+        target = calibrations.setdefault(label.upper(), {})
+        for key in ("depth_sign", "depth_scale"):
+            if key in values:
+                target[key] = float(values[key])
+    return calibrations
 
 
 def compute_body_reference(points, threshold: float) -> FrameReference | None:
@@ -56,6 +139,17 @@ def project_points(points, source_reference: FrameReference, target_reference: F
         projected_y = int(round(target_reference.origin_y + local_y * target_reference.scale))
         projected.append((projected_x, projected_y, float(conf)))
     return projected
+
+
+def _project_box(box, source_reference: FrameReference, target_reference: FrameReference):
+    projected_corners = project_points(
+        [(box[0], box[1], 1.0), (box[2], box[3], 1.0)],
+        source_reference,
+        target_reference,
+    )
+    x1, y1, _ = projected_corners[0]
+    x2, y2, _ = projected_corners[1]
+    return x1, y1, x2, y2
 
 
 def _choose_reference(camera_points_by_label, threshold: float, reference_label: str, reference_builder):
@@ -128,7 +222,7 @@ def fuse_hand_views(camera_hands: dict[str, dict], threshold: float, reference_l
         if source_reference is None:
             continue
         projected_points = project_points(hand_payload["points"], source_reference, reference_frame)
-        projected_box = hand_payload["box"]
+        projected_box = _project_box(hand_payload["box"], source_reference, reference_frame)
         projected_by_label[label] = {"points": projected_points, "box": projected_box}
 
     fused_points = []
@@ -171,3 +265,95 @@ def fuse_hand_views(camera_hands: dict[str, dict], threshold: float, reference_l
         int(round(wrist_y + half)),
     )
     return {"points": fused_points, "box": fused_box}
+
+
+def _estimate_body_joint_depths(
+    camera_bodies: dict[str, list[tuple[int, int, float]]],
+    threshold: float,
+    calibrations: dict[str, dict[str, float]],
+    depth_scale: float,
+) -> dict[str, float]:
+    joint_depths: dict[str, float] = {}
+    for joint_name, point_index in BODY_JOINT_NAME_TO_INDEX.items():
+        weighted_depth = 0.0
+        total_weight = 0.0
+        for label, points in camera_bodies.items():
+            calibration = calibrations.get(label.upper(), DEFAULT_CAMERA_CALIBRATIONS.get(label.upper(), {}))
+            depth_sign = float(calibration.get("depth_sign", 0.0))
+            depth_view_scale = float(calibration.get("depth_scale", 1.0))
+            if depth_sign == 0.0:
+                continue
+            reference = compute_body_reference(points, threshold)
+            if reference is None:
+                continue
+            point = points[point_index]
+            if point[2] <= threshold:
+                continue
+            local_x = (point[0] - reference.origin_x) / max(reference.scale, 1.0)
+            weight = point[2] * CAMERA_VIEW_WEIGHTS.get(label, 1.0)
+            weighted_depth += local_x * depth_sign * depth_view_scale * depth_scale * reference.scale * weight
+            total_weight += weight
+        joint_depths[joint_name] = 0.0 if total_weight <= 0.0 else weighted_depth / total_weight
+    return joint_depths
+
+
+def _estimate_hand_joint_depths(
+    camera_hands: dict[str, dict[str, dict]],
+    threshold: float,
+    calibrations: dict[str, dict[str, float]],
+    depth_scale: float,
+) -> dict[str, float]:
+    joint_depths: dict[str, float] = {}
+    for joint_name, (side, point_index) in HAND_JOINT_NAME_TO_INDEX.items():
+        weighted_depth = 0.0
+        total_weight = 0.0
+        for label, hands_by_side in camera_hands.items():
+            hand_payload = hands_by_side.get(side)
+            if hand_payload is None:
+                continue
+            calibration = calibrations.get(label.upper(), DEFAULT_CAMERA_CALIBRATIONS.get(label.upper(), {}))
+            depth_sign = float(calibration.get("depth_sign", 0.0))
+            depth_view_scale = float(calibration.get("depth_scale", 1.0))
+            if depth_sign == 0.0:
+                continue
+            reference = compute_hand_reference(hand_payload, threshold)
+            if reference is None:
+                continue
+            point = hand_payload["points"][point_index]
+            if point[2] <= threshold:
+                continue
+            local_x = (point[0] - reference.origin_x) / max(reference.scale, 1.0)
+            weight = point[2] * CAMERA_VIEW_WEIGHTS.get(label, 1.0)
+            weighted_depth += local_x * depth_sign * depth_view_scale * depth_scale * reference.scale * weight
+            total_weight += weight
+        joint_depths[joint_name] = 0.0 if total_weight <= 0.0 else weighted_depth / total_weight
+    return joint_depths
+
+
+def estimate_joint_depths(
+    camera_bodies: dict[str, list[tuple[int, int, float]]],
+    camera_hands: dict[str, dict[str, dict]],
+    body_threshold: float,
+    hand_threshold: float,
+    calibrations: dict[str, dict[str, float]],
+    depth_scale: float = 1.0,
+) -> dict[str, float]:
+    joint_depths = _estimate_body_joint_depths(
+        camera_bodies=camera_bodies,
+        threshold=body_threshold,
+        calibrations=calibrations,
+        depth_scale=depth_scale,
+    )
+    joint_depths.update(
+        _estimate_hand_joint_depths(
+            camera_hands=camera_hands,
+            threshold=hand_threshold,
+            calibrations=calibrations,
+            depth_scale=depth_scale,
+        )
+    )
+    if "HipsRoot" not in joint_depths:
+        joint_depths["HipsRoot"] = 0.0
+    if "Chest" not in joint_depths:
+        joint_depths["Chest"] = 0.0
+    return joint_depths
