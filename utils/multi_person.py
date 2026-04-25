@@ -30,6 +30,15 @@ COLOR_HSV_RANGES: dict[str, tuple[tuple[int, int, int], tuple[int, int, int]]] =
     "pink": ((165, 60, 60), (179, 255, 255)),
     "brown": ((5, 80, 30), (25, 255, 160)),
 }
+COLOR_NAMES = tuple(COLOR_HSV_RANGES)
+COLOR_HSV_BOUNDS = tuple(
+    (
+        color_name,
+        np.array(lower, dtype=np.uint8),
+        np.array(upper, dtype=np.uint8),
+    )
+    for color_name, (lower, upper) in COLOR_HSV_RANGES.items()
+)
 
 
 @dataclass(slots=True)
@@ -142,9 +151,7 @@ def _color_scores(frame, box: Box) -> dict[str, float]:
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
     pixel_count = max(hsv.shape[0] * hsv.shape[1], 1)
     scores: dict[str, float] = {}
-    for color_name, (lower, upper) in COLOR_HSV_RANGES.items():
-        lower_np = np.array([int(v) for v in lower], dtype=np.uint8)
-        upper_np = np.array([int(v) for v in upper], dtype=np.uint8)
+    for color_name, lower_np, upper_np in COLOR_HSV_BOUNDS:
         mask = cv2.inRange(hsv, lower_np, upper_np)
         scores[color_name] = float(cv2.countNonZero(mask)) / float(pixel_count)
     return scores
@@ -154,19 +161,20 @@ def _blend_color_scores(previous: ColorProfile, current: ColorProfile, alpha: fl
     if not previous:
         return dict(current)
     blended: ColorProfile = {}
-    all_keys = set(previous) | set(current)
-    for key in all_keys:
-        blended[key] = previous.get(key, 0.0) * (1.0 - alpha) + current.get(key, 0.0) * alpha
+    retain_previous_weight = 1.0 - alpha
+    for key in COLOR_NAMES:
+        blended_value = previous.get(key, 0.0) * retain_previous_weight + current.get(key, 0.0) * alpha
+        if blended_value > 0.0:
+            blended[key] = blended_value
     return blended
 
 
 def _color_profile_similarity(profile_a: ColorProfile, profile_b: ColorProfile) -> float:
     if not profile_a or not profile_b:
         return 0.0
-    shared_keys = set(profile_a) | set(profile_b)
     overlap = 0.0
     magnitude = 0.0
-    for key in shared_keys:
+    for key in COLOR_NAMES:
         value_a = profile_a.get(key, 0.0)
         value_b = profile_b.get(key, 0.0)
         overlap += min(value_a, value_b)
@@ -226,9 +234,39 @@ class MultiPersonTracker:
         used_tracks: set[int] = set()
         used_detections: set[int] = set()
 
+        # Fast path: preserve stable tracker-id matches without falling back to
+        # the more expensive all-pairs scoring pass.
+        detection_index_by_tracker_id = {
+            detection.track_id: detection_index
+            for detection_index, detection in enumerate(detections)
+            if detection.track_id is not None
+        }
+        for track_index, track in enumerate(self._tracks):
+            if track.tracker_id is None:
+                continue
+            detection_index = detection_index_by_tracker_id.get(track.tracker_id)
+            if detection_index is None or detection_index in used_detections:
+                continue
+            assignments[track_index] = detection_index
+            used_tracks.add(track_index)
+            used_detections.add(detection_index)
+
+        unmatched_track_indices = [
+            track_index
+            for track_index in range(len(self._tracks))
+            if track_index not in used_tracks
+        ]
+        unmatched_detection_indices = [
+            detection_index
+            for detection_index in range(len(detections))
+            if detection_index not in used_detections
+        ]
+
         scored_pairs: list[tuple[float, int, int]] = []
-        for detection_index, detection in enumerate(detections):
-            for track_index, track in enumerate(self._tracks):
+        for detection_index in unmatched_detection_indices:
+            detection = detections[detection_index]
+            for track_index in unmatched_track_indices:
+                track = self._tracks[track_index]
                 score = self._match_score(track, detection)
                 if score > self.config.person_match_threshold:
                     scored_pairs.append((score, track_index, detection_index))

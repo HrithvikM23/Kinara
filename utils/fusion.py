@@ -166,16 +166,44 @@ def _choose_reference(camera_points_by_label, threshold: float, reference_label:
     return None, None
 
 
+def _prepare_body_sources(
+    camera_bodies: dict[str, list[tuple[int, int, float]]],
+    threshold: float,
+) -> dict[str, tuple[list[tuple[int, int, float]], FrameReference, float]]:
+    prepared: dict[str, tuple[list[tuple[int, int, float]], FrameReference, float]] = {}
+    for label, points in camera_bodies.items():
+        reference = compute_body_reference(points, threshold)
+        if reference is None:
+            continue
+        prepared[label] = (points, reference, CAMERA_VIEW_WEIGHTS.get(label, 1.0))
+    return prepared
+
+
+def _prepare_hand_sources(
+    camera_hands: dict[str, dict],
+    threshold: float,
+) -> dict[str, tuple[dict, FrameReference, float]]:
+    prepared: dict[str, tuple[dict, FrameReference, float]] = {}
+    for label, hand_payload in camera_hands.items():
+        reference = compute_hand_reference(hand_payload, threshold)
+        if reference is None:
+            continue
+        prepared[label] = (hand_payload, reference, CAMERA_VIEW_WEIGHTS.get(label, 1.0))
+    return prepared
+
+
 def fuse_body_views(camera_bodies: dict[str, list[tuple[int, int, float]]], threshold: float, reference_label: str = "FRONT"):
-    reference_points, reference_frame = _choose_reference(camera_bodies, threshold, reference_label, compute_body_reference)
-    if reference_points is None or reference_frame is None:
+    prepared_sources = _prepare_body_sources(camera_bodies, threshold)
+    if not prepared_sources:
         return None
+    reference_source = prepared_sources.get(reference_label)
+    if reference_source is None:
+        reference_points, reference_frame, _ = next(iter(prepared_sources.values()))
+    else:
+        reference_points, reference_frame, _ = reference_source
 
     projected_by_label: dict[str, list[tuple[int, int, float]]] = {}
-    for label, points in camera_bodies.items():
-        source_reference = compute_body_reference(points, threshold)
-        if source_reference is None:
-            continue
+    for label, (points, source_reference, _) in prepared_sources.items():
         projected_by_label[label] = project_points(points, source_reference, reference_frame)
 
     fused_points = []
@@ -190,7 +218,8 @@ def fuse_body_views(camera_bodies: dict[str, list[tuple[int, int, float]]], thre
             x, y, conf = points[point_index]
             if conf <= 0:
                 continue
-            weight = conf * CAMERA_VIEW_WEIGHTS.get(label, 1.0)
+            _, _, view_weight = prepared_sources[label]
+            weight = conf * view_weight
             weighted_x += x * weight
             weighted_y += y * weight
             total_weight += weight
@@ -212,15 +241,17 @@ def fuse_body_views(camera_bodies: dict[str, list[tuple[int, int, float]]], thre
 
 
 def fuse_hand_views(camera_hands: dict[str, dict], threshold: float, reference_label: str = "FRONT"):
-    reference_hand, reference_frame = _choose_reference(camera_hands, threshold, reference_label, compute_hand_reference)
-    if reference_hand is None or reference_frame is None:
+    prepared_sources = _prepare_hand_sources(camera_hands, threshold)
+    if not prepared_sources:
         return None
+    reference_source = prepared_sources.get(reference_label)
+    if reference_source is None:
+        reference_hand, reference_frame, _ = next(iter(prepared_sources.values()))
+    else:
+        reference_hand, reference_frame, _ = reference_source
 
     projected_by_label: dict[str, dict] = {}
-    for label, hand_payload in camera_hands.items():
-        source_reference = compute_hand_reference(hand_payload, threshold)
-        if source_reference is None:
-            continue
+    for label, (hand_payload, source_reference, _) in prepared_sources.items():
         projected_points = project_points(hand_payload["points"], source_reference, reference_frame)
         projected_box = _project_box(hand_payload["box"], source_reference, reference_frame)
         projected_by_label[label] = {"points": projected_points, "box": projected_box}
@@ -237,7 +268,8 @@ def fuse_hand_views(camera_hands: dict[str, dict], threshold: float, reference_l
             x, y, conf = hand_payload["points"][point_index]
             if conf <= 0:
                 continue
-            weight = conf * CAMERA_VIEW_WEIGHTS.get(label, 1.0)
+            _, _, view_weight = prepared_sources[label]
+            weight = conf * view_weight
             weighted_x += x * weight
             weighted_y += y * weight
             total_weight += weight
@@ -273,24 +305,35 @@ def _estimate_body_joint_depths(
     calibrations: dict[str, dict[str, float]],
     depth_scale: float,
 ) -> dict[str, float]:
+    prepared_sources: list[tuple[list[tuple[int, int, float]], FrameReference, float, float, float]] = []
+    for label, points in camera_bodies.items():
+        calibration = calibrations.get(label.upper(), DEFAULT_CAMERA_CALIBRATIONS.get(label.upper(), {}))
+        depth_sign = float(calibration.get("depth_sign", 0.0))
+        if depth_sign == 0.0:
+            continue
+        reference = compute_body_reference(points, threshold)
+        if reference is None:
+            continue
+        prepared_sources.append(
+            (
+                points,
+                reference,
+                depth_sign,
+                float(calibration.get("depth_scale", 1.0)),
+                CAMERA_VIEW_WEIGHTS.get(label, 1.0),
+            )
+        )
+
     joint_depths: dict[str, float] = {}
     for joint_name, point_index in BODY_JOINT_NAME_TO_INDEX.items():
         weighted_depth = 0.0
         total_weight = 0.0
-        for label, points in camera_bodies.items():
-            calibration = calibrations.get(label.upper(), DEFAULT_CAMERA_CALIBRATIONS.get(label.upper(), {}))
-            depth_sign = float(calibration.get("depth_sign", 0.0))
-            depth_view_scale = float(calibration.get("depth_scale", 1.0))
-            if depth_sign == 0.0:
-                continue
-            reference = compute_body_reference(points, threshold)
-            if reference is None:
-                continue
+        for points, reference, depth_sign, depth_view_scale, view_weight in prepared_sources:
             point = points[point_index]
             if point[2] <= threshold:
                 continue
             local_x = (point[0] - reference.origin_x) / max(reference.scale, 1.0)
-            weight = point[2] * CAMERA_VIEW_WEIGHTS.get(label, 1.0)
+            weight = point[2] * view_weight
             weighted_depth += local_x * depth_sign * depth_view_scale * depth_scale * reference.scale * weight
             total_weight += weight
         joint_depths[joint_name] = 0.0 if total_weight <= 0.0 else weighted_depth / total_weight
@@ -303,27 +346,35 @@ def _estimate_hand_joint_depths(
     calibrations: dict[str, dict[str, float]],
     depth_scale: float,
 ) -> dict[str, float]:
+    prepared_sources_by_side: dict[str, list[tuple[dict, FrameReference, float, float, float]]] = {
+        "left": [],
+        "right": [],
+    }
+    for label, hands_by_side in camera_hands.items():
+        calibration = calibrations.get(label.upper(), DEFAULT_CAMERA_CALIBRATIONS.get(label.upper(), {}))
+        depth_sign = float(calibration.get("depth_sign", 0.0))
+        if depth_sign == 0.0:
+            continue
+        depth_view_scale = float(calibration.get("depth_scale", 1.0))
+        view_weight = CAMERA_VIEW_WEIGHTS.get(label, 1.0)
+        for side, hand_payload in hands_by_side.items():
+            reference = compute_hand_reference(hand_payload, threshold)
+            if reference is None:
+                continue
+            prepared_sources_by_side.setdefault(side, []).append(
+                (hand_payload, reference, depth_sign, depth_view_scale, view_weight)
+            )
+
     joint_depths: dict[str, float] = {}
     for joint_name, (side, point_index) in HAND_JOINT_NAME_TO_INDEX.items():
         weighted_depth = 0.0
         total_weight = 0.0
-        for label, hands_by_side in camera_hands.items():
-            hand_payload = hands_by_side.get(side)
-            if hand_payload is None:
-                continue
-            calibration = calibrations.get(label.upper(), DEFAULT_CAMERA_CALIBRATIONS.get(label.upper(), {}))
-            depth_sign = float(calibration.get("depth_sign", 0.0))
-            depth_view_scale = float(calibration.get("depth_scale", 1.0))
-            if depth_sign == 0.0:
-                continue
-            reference = compute_hand_reference(hand_payload, threshold)
-            if reference is None:
-                continue
+        for hand_payload, reference, depth_sign, depth_view_scale, view_weight in prepared_sources_by_side.get(side, []):
             point = hand_payload["points"][point_index]
             if point[2] <= threshold:
                 continue
             local_x = (point[0] - reference.origin_x) / max(reference.scale, 1.0)
-            weight = point[2] * CAMERA_VIEW_WEIGHTS.get(label, 1.0)
+            weight = point[2] * view_weight
             weighted_depth += local_x * depth_sign * depth_view_scale * depth_scale * reference.scale * weight
             total_weight += weight
         joint_depths[joint_name] = 0.0 if total_weight <= 0.0 else weighted_depth / total_weight

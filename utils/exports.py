@@ -122,11 +122,16 @@ def _to_world(x: int, y: int, z: float = 0.0) -> tuple[float, float, float]:
 
 
 def _average_points(points: list[tuple[int, int, float]]) -> tuple[float, float, float, float]:
-    xs = [point[0] for point in points]
-    ys = [point[1] for point in points]
-    confs = [point[2] for point in points]
-    x, y, z = _to_world(int(round(sum(xs) / len(xs))), int(round(sum(ys) / len(ys))))
-    return x, y, z, float(sum(confs) / len(confs))
+    point_count = len(points)
+    sum_x = 0
+    sum_y = 0
+    sum_conf = 0.0
+    for x, y, conf in points:
+        sum_x += x
+        sum_y += y
+        sum_conf += conf
+    x, y, z = _to_world(int(round(sum_x / point_count)), int(round(sum_y / point_count)))
+    return x, y, z, float(sum_conf / point_count)
 
 
 def _zero_joint() -> dict[str, float]:
@@ -299,13 +304,19 @@ def _ground_z_axis_frames(frames: list[dict[str, object]]) -> list[dict[str, obj
     return grounded_frames
 
 
+def _normalize_export_frames(frames: list[dict[str, object]]) -> list[dict[str, object]]:
+    return _ground_z_axis_frames(_z_up_joint_frames(frames))
+
+
 def export_motion_json(
     output_path: Path,
     fps: float,
     frames: list[dict[str, object]],
     metadata: dict[str, object],
+    frames_are_normalized: bool = False,
 ) -> None:
-    frames = _ground_z_axis_frames(_z_up_joint_frames(frames))
+    if not frames_are_normalized:
+        frames = _normalize_export_frames(frames)
     payload = {
         "format": "kinara-motion-json-v1",
         "fps": fps,
@@ -313,7 +324,8 @@ def export_motion_json(
         "metadata": metadata,
         "frames": frames,
     }
-    output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    with output_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
 
 
 def export_multi_person_json(
@@ -329,7 +341,8 @@ def export_multi_person_json(
         "metadata": metadata,
         "frames": frames,
     }
-    output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    with output_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
 
 
 def _sanitize_person_label(label: str) -> str:
@@ -351,7 +364,6 @@ def export_multi_person_fbx_bundle(
         return []
 
     person_frames: dict[str, list[dict[str, object]]] = {}
-    person_labels_by_key: dict[str, str] = {}
 
     for frame in frames:
         frame_index = int(frame.get("frame_index", 0))
@@ -363,7 +375,6 @@ def export_multi_person_fbx_bundle(
                     continue
                 label = str(person.get("label") or f"person{person.get('id', '0')}")
                 person_key = _sanitize_person_label(label)
-                person_labels_by_key[person_key] = label
                 joints = person.get("joints")
                 if isinstance(joints, dict):
                     keyed_people[person_key] = cast(dict[str, object], joints)
@@ -425,11 +436,12 @@ def _build_bvh_hierarchy_lines(joint_name: str, offsets: dict[str, tuple[float, 
     return lines
 
 
-def export_motion_bvh(output_path: Path, fps: float, frames: list[dict[str, object]]) -> None:
+def export_motion_bvh(output_path: Path, fps: float, frames: list[dict[str, object]], frames_are_normalized: bool = False) -> None:
     if not frames:
         return
 
-    frames = _ground_z_axis_frames(_z_up_joint_frames(frames))
+    if not frames_are_normalized:
+        frames = _normalize_export_frames(frames)
     local_frames = [_localize_joint_map(_frame_joint_map(frame)) for frame in frames]
     offsets = _compute_offsets(local_frames[0])
 
@@ -476,11 +488,12 @@ def _fbx_template_header() -> list[str]:
     ]
 
 
-def export_motion_fbx(output_path: Path, fps: float, frames: list[dict[str, object]]) -> None:
+def export_motion_fbx(output_path: Path, fps: float, frames: list[dict[str, object]], frames_are_normalized: bool = False) -> None:
     if not frames:
         return
 
-    frames = _ground_z_axis_frames(_z_up_joint_frames(frames))
+    if not frames_are_normalized:
+        frames = _normalize_export_frames(frames)
     local_frames = [_localize_joint_map(_frame_joint_map(frame)) for frame in frames]
     model_ids: dict[str, int] = {}
     curve_node_ids: dict[str, int] = {}

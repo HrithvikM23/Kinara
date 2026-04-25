@@ -17,10 +17,11 @@ from utils.exports import (
     export_motion_json,
     export_multi_person_fbx_bundle,
     export_multi_person_json,
+    _normalize_export_frames,
 )
 from utils.fusion import estimate_joint_depths, fuse_body_views, fuse_hand_views, load_camera_calibrations
 from utils.model_assets import DEFAULT_BODY_MODEL, HAND_MODEL_SPECS, ensure_body_model_file, ensure_model_file
-from utils.multi_person import MultiPersonTracker, PersonTrack
+from utils.multi_person import COLOR_NAMES, MultiPersonTracker, PersonTrack
 from utils.smoothing import LandmarkSmoother
 
 
@@ -603,8 +604,9 @@ def export_motion_bundle(
 ) -> None:
     if not frames:
         return
-    export_motion_json(config.json_output_path, fps, frames, metadata)
-    export_motion_fbx(config.fbx_output_path, fps, frames)
+    normalized_frames = _normalize_export_frames(frames)
+    export_motion_json(config.json_output_path, fps, normalized_frames, metadata, frames_are_normalized=True)
+    export_motion_fbx(config.fbx_output_path, fps, normalized_frames, frames_are_normalized=True)
 
 
 def build_config_for_assignment(args: argparse.Namespace, assignment: InputAssignment, multi_input: bool) -> PipelineConfig:
@@ -730,10 +732,9 @@ def build_fused_config(args: argparse.Namespace, assignments: list[InputAssignme
 def _color_similarity(profile_a: dict[str, float], profile_b: dict[str, float]) -> float:
     if not profile_a or not profile_b:
         return 0.0
-    keys = set(profile_a) | set(profile_b)
     overlap = 0.0
     magnitude = 0.0
-    for key in keys:
+    for key in COLOR_NAMES:
         overlap += min(profile_a.get(key, 0.0), profile_b.get(key, 0.0))
         magnitude += max(profile_a.get(key, 0.0), profile_b.get(key, 0.0))
     if magnitude <= 0.0:
@@ -770,40 +771,59 @@ def _align_people_across_cameras(
         if camera_label == reference_label:
             continue
 
-        remaining_tracks = sorted(tracks, key=_track_sort_key)
+        sorted_tracks = sorted(tracks, key=_track_sort_key)
         assigned_keys: set[str] = set()
+        remaining_tracks: list[PersonTrack] = []
 
-        for track in list(remaining_tracks):
-            if track.label and track.label in grouped:
+        for track in sorted_tracks:
+            if track.label and track.label in grouped and track.label not in assigned_keys:
                 grouped.setdefault(track.label, {})[camera_label] = track
                 assigned_keys.add(track.label)
-                remaining_tracks.remove(track)
+                continue
+            remaining_tracks.append(track)
 
         open_reference_keys = [key for key in reference_keys if key not in assigned_keys]
-        still_unmatched = list(remaining_tracks)
-        while still_unmatched and open_reference_keys:
+        if remaining_tracks and open_reference_keys:
             scored_pairs: list[tuple[float, int, int]] = []
-            for track_index, track in enumerate(still_unmatched):
+            for track_index, track in enumerate(remaining_tracks):
                 for key_index, key in enumerate(open_reference_keys):
                     reference_track = grouped.get(key, {}).get(reference_label)
                     if reference_track is None:
                         continue
-                    score = _color_similarity(reference_track.color_signature, track.color_signature)
-                    scored_pairs.append((score, track_index, key_index))
-            if not scored_pairs:
-                break
-            _, track_index, key_index = max(scored_pairs)
-            key = open_reference_keys.pop(key_index)
-            track = still_unmatched.pop(track_index)
-            grouped.setdefault(key, {})[camera_label] = track
-            assigned_keys.add(key)
+                    scored_pairs.append(
+                        (
+                            _color_similarity(reference_track.color_signature, track.color_signature),
+                            track_index,
+                            key_index,
+                        )
+                    )
 
-        for key, track in zip(open_reference_keys, still_unmatched):
+            used_track_indices: set[int] = set()
+            used_key_indices: set[int] = set()
+            for _, track_index, key_index in sorted(scored_pairs, reverse=True):
+                if track_index in used_track_indices or key_index in used_key_indices:
+                    continue
+                key = open_reference_keys[key_index]
+                grouped.setdefault(key, {})[camera_label] = remaining_tracks[track_index]
+                assigned_keys.add(key)
+                used_track_indices.add(track_index)
+                used_key_indices.add(key_index)
+
+            remaining_tracks = [
+                track for track_index, track in enumerate(remaining_tracks)
+                if track_index not in used_track_indices
+            ]
+            open_reference_keys = [
+                key for key_index, key in enumerate(open_reference_keys)
+                if key_index not in used_key_indices
+            ]
+
+        for key, track in zip(open_reference_keys, remaining_tracks):
             grouped.setdefault(key, {})[camera_label] = track
             assigned_keys.add(key)
 
         extra_index = 0
-        for track in still_unmatched[len(open_reference_keys):]:
+        for track in remaining_tracks[len(open_reference_keys):]:
             while f"person{len(reference_keys) + extra_index + 1}" in grouped:
                 extra_index += 1
             key = f"person{len(reference_keys) + extra_index + 1}"

@@ -62,22 +62,19 @@ class LandmarkSmoother:
             assert previous_points is not None
             points = [(0, 0, 0.0) for _ in previous_points]
 
-        previous_points_with_gaps: list[Point | None]
         if previous_points is None or len(previous_points) != len(points):
-            previous_points_with_gaps = [None] * len(points)
             missing_counts[:] = [0] * len(points)
         elif len(missing_counts) != len(points):
-            previous_points_with_gaps = list(previous_points)
             missing_counts[:] = [0] * len(points)
-        else:
-            previous_points_with_gaps = list(previous_points)
 
         smoothed_points: list[Point] = []
         valid_points_found = False
 
         for index, point in enumerate(points):
             px, py, conf = point
-            prev_point = previous_points_with_gaps[index]
+            prev_point = None
+            if previous_points is not None and index < len(previous_points):
+                prev_point = previous_points[index]
 
             if conf > threshold:
                 if prev_point is not None:
@@ -85,7 +82,6 @@ class LandmarkSmoother:
                     px = int(round(alpha * px + (1.0 - alpha) * prev_x))
                     py = int(round(alpha * py + (1.0 - alpha) * prev_y))
                 smoothed_point = (px, py, float(conf))
-                previous_points_with_gaps[index] = smoothed_point
                 missing_counts[index] = 0
                 smoothed_points.append(smoothed_point)
                 valid_points_found = True
@@ -95,14 +91,12 @@ class LandmarkSmoother:
                 held_x, held_y, held_conf = prev_point
                 held_conf *= self.config.hold_confidence_decay
                 smoothed_point = (held_x, held_y, float(held_conf))
-                previous_points_with_gaps[index] = smoothed_point
                 missing_counts[index] += 1
                 smoothed_points.append(smoothed_point)
                 valid_points_found = True
                 continue
 
             missing_counts[index] = hold_frames
-            previous_points_with_gaps[index] = None
             smoothed_points.append((int(px), int(py), float(conf)))
 
         if not valid_points_found:
