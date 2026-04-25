@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 
 FBX_TIME_UNIT = 46186158000
@@ -175,14 +176,146 @@ def _localize_joint_map(joint_map: dict[str, dict[str, float]]) -> dict[str, dic
     return local_map
 
 
+def _frame_joint_map(frame: dict[str, object]) -> dict[str, dict[str, float]]:
+    return cast(dict[str, dict[str, float]], frame["joints"])
+
+
+def _ground_joint_frames(frames: list[dict[str, object]]) -> list[dict[str, object]]:
+    min_y: float | None = None
+    for frame in frames:
+        joints = frame["joints"]
+        if not isinstance(joints, dict):
+            continue
+        for joint in joints.values():
+            if not isinstance(joint, dict):
+                continue
+            if float(joint.get("confidence", 0.0)) <= 0.0:
+                continue
+            joint_y = float(joint["y"])
+            min_y = joint_y if min_y is None else min(min_y, joint_y)
+
+    if min_y is None:
+        return frames
+
+    grounded_frames: list[dict[str, object]] = []
+    for frame in frames:
+        joints = frame["joints"]
+        if not isinstance(joints, dict):
+            grounded_frames.append(frame)
+            continue
+
+        grounded_joints: dict[str, dict[str, float]] = {}
+        for name, joint in joints.items():
+            if not isinstance(joint, dict):
+                continue
+            grounded_joints[name] = {
+                "x": float(joint["x"]),
+                "y": float(joint["y"]) - min_y,
+                "z": float(joint["z"]),
+                "confidence": float(joint["confidence"]),
+            }
+
+        grounded_frame = dict(frame)
+        grounded_frame["joints"] = grounded_joints
+        grounded_frames.append(grounded_frame)
+
+    return grounded_frames
+
+
+def _z_up_joint_frames(frames: list[dict[str, object]]) -> list[dict[str, object]]:
+    grounded_frames = _ground_joint_frames(frames)
+    z_up_frames: list[dict[str, object]] = []
+    for frame in grounded_frames:
+        joints = frame["joints"]
+        if not isinstance(joints, dict):
+            z_up_frames.append(frame)
+            continue
+
+        z_up_joints: dict[str, dict[str, float]] = {}
+        for name, joint in joints.items():
+            if not isinstance(joint, dict):
+                continue
+            z_up_joints[name] = {
+                "x": float(joint["x"]),
+                "y": float(joint["z"]),
+                "z": float(joint["y"]),
+                "confidence": float(joint["confidence"]),
+            }
+
+        z_up_frame = dict(frame)
+        z_up_frame["joints"] = z_up_joints
+        z_up_frames.append(z_up_frame)
+
+    return z_up_frames
+
+
+def _ground_z_axis_frames(frames: list[dict[str, object]]) -> list[dict[str, object]]:
+    min_z: float | None = None
+    for frame in frames:
+        joints = frame["joints"]
+        if not isinstance(joints, dict):
+            continue
+        for joint in joints.values():
+            if not isinstance(joint, dict):
+                continue
+            if float(joint.get("confidence", 0.0)) <= 0.0:
+                continue
+            joint_z = float(joint["z"])
+            min_z = joint_z if min_z is None else min(min_z, joint_z)
+
+    if min_z is None:
+        return frames
+
+    grounded_frames: list[dict[str, object]] = []
+    for frame in frames:
+        joints = frame["joints"]
+        if not isinstance(joints, dict):
+            grounded_frames.append(frame)
+            continue
+
+        grounded_joints: dict[str, dict[str, float]] = {}
+        for name, joint in joints.items():
+            if not isinstance(joint, dict):
+                continue
+            grounded_joints[name] = {
+                "x": float(joint["x"]),
+                "y": float(joint["y"]),
+                "z": float(joint["z"]) - min_z,
+                "confidence": float(joint["confidence"]),
+            }
+
+        grounded_frame = dict(frame)
+        grounded_frame["joints"] = grounded_joints
+        grounded_frames.append(grounded_frame)
+
+    return grounded_frames
+
+
 def export_motion_json(
     output_path: Path,
     fps: float,
     frames: list[dict[str, object]],
     metadata: dict[str, object],
 ) -> None:
+    frames = _ground_z_axis_frames(_z_up_joint_frames(frames))
     payload = {
         "format": "kinara-motion-json-v1",
+        "fps": fps,
+        "frame_count": len(frames),
+        "metadata": metadata,
+        "frames": frames,
+    }
+    output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def export_multi_person_json(
+    output_path: Path,
+    fps: float,
+    frames: list[dict[str, object]],
+    metadata: dict[str, object],
+) -> None:
+    payload = {
+        "format": "kinara-multi-person-json-v1",
         "fps": fps,
         "frame_count": len(frames),
         "metadata": metadata,
@@ -208,9 +341,12 @@ def _build_bvh_hierarchy_lines(joint_name: str, offsets: dict[str, tuple[float, 
     lines.append(f"{prefix}{{")
     ox, oy, oz = offsets[joint_name]
     lines.append(f"{prefix}  OFFSET {ox:.6f} {oy:.6f} {oz:.6f}")
-    lines.append(
-        f"{prefix}  CHANNELS 6 Xposition Yposition Zposition Xrotation Yrotation Zrotation"
-    )
+    if joint.parent is None:
+        lines.append(
+            f"{prefix}  CHANNELS 6 Xposition Yposition Zposition Xrotation Yrotation Zrotation"
+        )
+    else:
+        lines.append(f"{prefix}  CHANNELS 3 Xposition Yposition Zposition")
 
     children = CHILDREN_BY_PARENT.get(joint_name, [])
     if not children:
@@ -229,7 +365,8 @@ def export_motion_bvh(output_path: Path, fps: float, frames: list[dict[str, obje
     if not frames:
         return
 
-    local_frames = [_localize_joint_map(frame["joints"]) for frame in frames]
+    frames = _ground_z_axis_frames(_z_up_joint_frames(frames))
+    local_frames = [_localize_joint_map(_frame_joint_map(frame)) for frame in frames]
     offsets = _compute_offsets(local_frames[0])
 
     hierarchy_lines = ["HIERARCHY"]
@@ -245,7 +382,8 @@ def export_motion_bvh(output_path: Path, fps: float, frames: list[dict[str, obje
             values.append(f"{current['x']:.6f}")
             values.append(f"{current['y']:.6f}")
             values.append(f"{current['z']:.6f}")
-            values.extend(("0.000000", "0.000000", "0.000000"))
+            if joint.parent is None:
+                values.extend(("0.000000", "0.000000", "0.000000"))
         hierarchy_lines.append(" ".join(values))
 
     output_path.write_text("\n".join(hierarchy_lines) + "\n", encoding="utf-8")
@@ -262,7 +400,7 @@ def _fbx_template_header() -> list[str]:
         'GlobalSettings:  {',
         '  Version: 1000',
         '  Properties70:  {',
-        '    P: "UpAxis", "int", "Integer", "",1',
+        '    P: "UpAxis", "int", "Integer", "",2',
         '    P: "UpAxisSign", "int", "Integer", "",1',
         '    P: "FrontAxis", "int", "Integer", "",2',
         '    P: "FrontAxisSign", "int", "Integer", "",1',
@@ -278,7 +416,8 @@ def export_motion_fbx(output_path: Path, fps: float, frames: list[dict[str, obje
     if not frames:
         return
 
-    local_frames = [_localize_joint_map(frame["joints"]) for frame in frames]
+    frames = _ground_z_axis_frames(_z_up_joint_frames(frames))
+    local_frames = [_localize_joint_map(_frame_joint_map(frame)) for frame in frames]
     model_ids: dict[str, int] = {}
     curve_node_ids: dict[str, int] = {}
     curve_ids: dict[tuple[str, str], int] = {}
@@ -319,7 +458,7 @@ def export_motion_fbx(output_path: Path, fps: float, frames: list[dict[str, obje
         lines.append('      P: "Lcl Scaling", "Lcl Scaling", "", "A",1,1,1')
         lines.append("    }")
         lines.append("    Shading: T")
-        lines.append("    Culling: \"CullingOff\"")
+        lines.append('    Culling: "CullingOff"')
         lines.append("  }")
 
     for joint in SKELETON:
@@ -337,7 +476,7 @@ def export_motion_fbx(output_path: Path, fps: float, frames: list[dict[str, obje
             values = [local_frame[joint.name][axis.lower()] for local_frame in local_frames]
             lines.append(f'  AnimationCurve: {curve_id}, "AnimCurve::{joint.name}_T_{axis}", "" {{')
             lines.append("    Default: 0")
-            lines.append(f"    KeyVer: 4008")
+            lines.append("    KeyVer: 4008")
             lines.append(f"    KeyTime: *{len(key_times)} {{")
             lines.append("      a: " + ",".join(str(value) for value in key_times))
             lines.append("    }")

@@ -13,15 +13,10 @@ from config import PipelineConfig
 from inference.rtmpose import ONNXPoseHandRunner
 from network.osc_sender import OSCSender
 from pipeline.pipeline import PoseHandPipeline
-from utils.exports import build_joint_map, export_motion_bvh, export_motion_fbx, export_motion_json
+from utils.exports import build_joint_map, export_motion_fbx, export_motion_json, export_multi_person_json
 from utils.fusion import fuse_body_views, fuse_hand_views
-from utils.model_assets import (
-    BODY_MODEL_ALIASES,
-    BODY_MODEL_SPECS,
-    HAND_MODEL_ALIASES,
-    HAND_MODEL_SPECS,
-    ensure_model_file,
-)
+from utils.model_assets import DEFAULT_BODY_MODEL, HAND_MODEL_SPECS, ensure_body_model_file, ensure_model_file
+from utils.multi_person import MultiPersonTracker
 from utils.smoothing import LandmarkSmoother
 
 
@@ -55,49 +50,23 @@ def parse_color(value: str) -> tuple[int, int, int]:
     return color
 
 
-def parse_model_assignment(value: str) -> tuple[str, str]:
+def parse_identity_hint(value: str) -> tuple[str, tuple[str, ...]]:
     if "=" not in value:
-        raise argparse.ArgumentTypeError("Model overrides must look like 'movenet=max' or 'hand=high'.")
-
-    name, variant = value.split("=", 1)
-    normalized_name = name.strip().lower()
-    normalized_variant = variant.strip().lower()
-    if not normalized_name or not normalized_variant:
-        raise argparse.ArgumentTypeError("Model overrides must include both model name and variant.")
-    return normalized_name, normalized_variant
-
-
-def resolve_model_variants(assignments: list[tuple[str, str]] | None) -> tuple[str, str]:
-    body_variant = "max"
-    hand_variant = "max"
-
-    for model_name, variant in assignments or []:
-        if model_name in BODY_MODEL_ALIASES:
-            body_variant = variant
-            continue
-        if model_name in HAND_MODEL_ALIASES:
-            hand_variant = variant
-            continue
-        raise ValueError(f"Unsupported model selector '{model_name}'. Use 'movenet'/'body' or 'hand'.")
-
-    if body_variant not in BODY_MODEL_SPECS:
-        raise ValueError(f"Unsupported body model variant '{body_variant}'. Use low, mid, high, or max.")
-    if hand_variant not in HAND_MODEL_SPECS:
-        raise ValueError(f"Unsupported hand model variant '{hand_variant}'. Use low, mid, high, or max.")
-
-    return body_variant, hand_variant
+        raise argparse.ArgumentTypeError("Identity hints must look like 'person1=black,orange'.")
+    label, colors_raw = value.split("=", 1)
+    normalized_label = label.strip().lower()
+    colors = tuple(color.strip().lower() for color in colors_raw.split(",") if color.strip())
+    if not normalized_label or not colors:
+        raise argparse.ArgumentTypeError("Identity hints must include a label and at least one color.")
+    return normalized_label, colors
 
 
 def prepare_model_assets(config: PipelineConfig) -> None:
-    body_spec = BODY_MODEL_SPECS[config.body_model_variant]
     hand_spec = HAND_MODEL_SPECS[config.hand_model_variant]
 
     if config.body_model_path is None:
-        print(f"Preparing body model preset '{config.body_model_variant}'...")
-        config.body_model_path = ensure_model_file(config.project_root, body_spec)
-        config.body_input_size = body_spec.input_size
-        config.body_input_name = body_spec.input_name
-        config.body_input_dtype = body_spec.input_dtype
+        config.body_model_path = config.body_model_variant or DEFAULT_BODY_MODEL
+    config.body_model_path = ensure_body_model_file(config.project_root, str(config.body_model_path))
 
     if config.hand_model_path is None:
         print(f"Preparing hand model preset '{config.hand_model_variant}'...")
@@ -241,19 +210,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--output-basename",
-        help="Base filename prefix used for rendered/fbx/bvh/json sibling outputs.",
+        help="Base filename prefix used for rendered/fbx/json sibling outputs.",
     )
     parser.add_argument(
         "--model",
-        dest="model_assignments",
-        action="append",
-        type=parse_model_assignment,
-        help="Model preset override like --model movenet=max or --model hand=high. Supported variants: low, mid, high, max.",
+        help="Body model filename or path, for example yolo11x-pose.pt or a local YOLO pose weights path.",
     )
     parser.add_argument(
-        "--body-model",
-        type=Path,
-        help="Path to the ONNX body model. Overrides the body preset download.",
+        "--hand-model-variant",
+        choices=("low", "mid", "high", "max"),
+        default="max",
+        help="Hand model preset. Supported variants: low, mid, high, max.",
     )
     parser.add_argument(
         "--hand-model",
@@ -263,7 +230,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--body-input-name",
         default="input",
-        help="Input tensor name for the body model.",
+        help="Reserved body input name setting. Kept in config for compatibility.",
     )
     parser.add_argument(
         "--hand-input-name",
@@ -273,8 +240,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--body-input-size",
         type=int,
-        default=192,
-        help="Square input size for the body model.",
+        default=960,
+        help="YOLO body model image size.",
     )
     parser.add_argument(
         "--hand-input-size",
@@ -298,7 +265,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--hand-kp-threshold",
         type=float,
         default=0.20,
-        help="Minimum hand keypoint confidence for drawing and OSC output.",
+        help="Minimum hand keypoint confidence for drawing and live UDP output.",
     )
     parser.add_argument(
         "--hand-box-min-size",
@@ -313,26 +280,84 @@ def build_parser() -> argparse.ArgumentParser:
         help="Scale factor applied to the wrist-elbow based hand crop.",
     )
     parser.add_argument(
+        "--body-iou-threshold",
+        type=float,
+        default=0.45,
+        help="YOLO body NMS IoU threshold.",
+    )
+    parser.add_argument(
+        "--max-people",
+        type=int,
+        default=1,
+        help="Maximum number of people to detect and track in a single view.",
+    )
+    parser.add_argument(
+        "--identity",
+        dest="identity_hints",
+        action="append",
+        type=parse_identity_hint,
+        help="Optional clothing color hint like --identity person1=black,orange.",
+    )
+    parser.add_argument(
+        "--person-detector-scale",
+        type=float,
+        default=1.05,
+        help="Deprecated compatibility setting. Kept in config but unused by the YOLO multi-person path.",
+    )
+    parser.add_argument(
+        "--person-box-scale",
+        type=float,
+        default=1.15,
+        help="Expand each detected person box before running pose and hand inference.",
+    )
+    parser.add_argument(
+        "--person-track-hold-frames",
+        type=int,
+        default=10,
+        help="How many frames to keep a person track alive when detections are briefly missing.",
+    )
+    parser.add_argument(
+        "--person-match-threshold",
+        type=float,
+        default=0.15,
+        help="Minimum association score when matching a detected person to an existing track.",
+    )
+    parser.add_argument(
+        "--person-cross-wrist-ratio",
+        type=float,
+        default=0.90,
+        help="Hand ownership switch ratio. Lower values are stricter during crossings.",
+    )
+    parser.add_argument(
+        "--yolo-tracker",
+        default="botsort.yaml",
+        help="Ultralytics tracker config name for multi-person tracking.",
+    )
+    parser.add_argument(
+        "--yolo-device",
+        help="Optional Ultralytics device override such as 0, cpu, or cuda:0.",
+    )
+    parser.add_argument(
         "--provider",
         dest="providers",
         action="append",
-        help="Execution provider to use. Repeat to set priority, e.g. --provider CUDAExecutionProvider --provider CPUExecutionProvider.",
+        help="ONNX Runtime provider priority for the hand model, e.g. --provider CUDAExecutionProvider --provider CPUExecutionProvider.",
     )
     parser.add_argument(
         "--osc-host",
         default="127.0.0.1",
-        help="OSC target host.",
+        help="Live UDP target host.",
     )
     parser.add_argument(
         "--osc-port",
         type=int,
         default=9000,
-        help="OSC target port.",
+        help="Live UDP target port.",
     )
     parser.add_argument(
         "--osc-enabled",
         action="store_true",
-        help="Enable OSC sending.",
+        help="Enable live UDP sending.",
     )
     parser.add_argument(
         "--preview-title",
@@ -450,7 +475,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def validate_config(config: PipelineConfig) -> bool:
     missing_paths = [
-        path for path in (config.body_model_path, config.hand_model_path)
+        path for path in (config.hand_model_path,)
         if path is not None and not Path(path).exists()
     ]
     if missing_paths:
@@ -473,6 +498,12 @@ def validate_config(config: PipelineConfig) -> bool:
         "body_smoothing_alpha": config.body_smoothing_alpha,
         "hand_smoothing_alpha": config.hand_smoothing_alpha,
         "hold_confidence_decay": config.hold_confidence_decay,
+        "body_conf_threshold": config.body_conf_threshold,
+        "body_iou_threshold": config.body_iou_threshold,
+        "hand_det_threshold": config.hand_det_threshold,
+        "hand_kp_threshold": config.hand_kp_threshold,
+        "identity_min_score": config.identity_min_score,
+        "person_cross_wrist_ratio": config.person_cross_wrist_ratio,
     }
     for field_name, value in bounded_float_fields.items():
         if value <= 0 or value > 1:
@@ -489,19 +520,23 @@ def validate_config(config: PipelineConfig) -> bool:
         "hand_point_radius": config.hand_point_radius,
         "body_hold_frames": config.body_hold_frames,
         "hand_hold_frames": config.hand_hold_frames,
+        "max_people": config.max_people,
+        "person_track_hold_frames": config.person_track_hold_frames,
     }
     for field_name, value in positive_int_fields.items():
         if value <= 0:
             print(f"Error: {field_name} must be positive: {value}")
             return False
+    if config.person_detector_scale <= 1.0:
+        print(f"Error: person_detector_scale must be greater than 1.0: {config.person_detector_scale}")
+        return False
+    if config.person_box_scale <= 0:
+        print(f"Error: person_box_scale must be positive: {config.person_box_scale}")
+        return False
+    if config.person_match_threshold <= 0:
+        print(f"Error: person_match_threshold must be positive: {config.person_match_threshold}")
+        return False
     return True
-
-
-def build_motion_frame(frame_index: int, body_points, hands_by_side) -> dict[str, object]:
-    return {
-        "frame_index": frame_index,
-        "joints": build_joint_map(body_points, hands_by_side),
-    }
 
 
 def export_motion_bundle(
@@ -513,26 +548,19 @@ def export_motion_bundle(
     if not frames:
         return
     export_motion_json(config.json_output_path, fps, frames, metadata)
-    export_motion_bvh(config.bvh_output_path, fps, frames)
     export_motion_fbx(config.fbx_output_path, fps, frames)
 
 
-def build_config_for_assignment(
-    args: argparse.Namespace,
-    assignment: InputAssignment,
-    body_model_variant: str,
-    hand_model_variant: str,
-    multi_input: bool,
-) -> PipelineConfig:
+def build_config_for_assignment(args: argparse.Namespace, assignment: InputAssignment, multi_input: bool) -> PipelineConfig:
     config = PipelineConfig(
         video_path=assignment.source,
         output_path=resolve_output_path(args.output, assignment.label, multi_input),
         output_directory=args.output_dir,
         output_basename=resolve_output_basename(args.output_basename, assignment.source, assignment.label, multi_input),
-        body_model_path=args.body_model,
+        body_model_path=args.model,
         hand_model_path=args.hand_model,
-        body_model_variant=body_model_variant,
-        hand_model_variant=hand_model_variant,
+        body_model_variant=args.model or DEFAULT_BODY_MODEL,
+        hand_model_variant=args.hand_model_variant,
         body_input_name=args.body_input_name,
         body_input_dtype="int32",
         hand_input_name=args.hand_input_name,
@@ -540,6 +568,7 @@ def build_config_for_assignment(
         body_input_size=args.body_input_size,
         hand_input_size=args.hand_input_size,
         body_conf_threshold=args.body_conf_threshold,
+        body_iou_threshold=args.body_iou_threshold,
         hand_det_threshold=args.hand_det_threshold,
         hand_kp_threshold=args.hand_kp_threshold,
         hand_box_min_size=args.hand_box_min_size,
@@ -567,26 +596,30 @@ def build_config_for_assignment(
         body_hold_frames=args.body_hold_frames,
         hand_hold_frames=args.hand_hold_frames,
         hold_confidence_decay=args.hold_confidence_decay,
+        max_people=args.max_people,
+        person_detector_scale=args.person_detector_scale,
+        person_box_scale=args.person_box_scale,
+        person_track_hold_frames=args.person_track_hold_frames,
+        person_match_threshold=args.person_match_threshold,
+        person_cross_wrist_ratio=args.person_cross_wrist_ratio,
+        yolo_tracker=args.yolo_tracker,
+        yolo_device=args.yolo_device,
+        identity_hints=dict(args.identity_hints or []),
     )
     return config
 
 
-def build_fused_config(
-    args: argparse.Namespace,
-    assignments: list[InputAssignment],
-    body_model_variant: str,
-    hand_model_variant: str,
-) -> PipelineConfig:
+def build_fused_config(args: argparse.Namespace, assignments: list[InputAssignment]) -> PipelineConfig:
     reference_assignment = next((assignment for assignment in assignments if assignment.label == "FRONT"), assignments[0])
     return PipelineConfig(
         video_path=reference_assignment.source,
         output_path=resolve_fused_output_path(args.output),
         output_directory=args.output_dir,
         output_basename=resolve_fused_output_basename(args.output_basename, assignments),
-        body_model_path=args.body_model,
+        body_model_path=args.model,
         hand_model_path=args.hand_model,
-        body_model_variant=body_model_variant,
-        hand_model_variant=hand_model_variant,
+        body_model_variant=args.model or DEFAULT_BODY_MODEL,
+        hand_model_variant=args.hand_model_variant,
         body_input_name=args.body_input_name,
         body_input_dtype="int32",
         hand_input_name=args.hand_input_name,
@@ -594,6 +627,7 @@ def build_fused_config(
         body_input_size=args.body_input_size,
         hand_input_size=args.hand_input_size,
         body_conf_threshold=args.body_conf_threshold,
+        body_iou_threshold=args.body_iou_threshold,
         hand_det_threshold=args.hand_det_threshold,
         hand_kp_threshold=args.hand_kp_threshold,
         hand_box_min_size=args.hand_box_min_size,
@@ -621,10 +655,99 @@ def build_fused_config(
         body_hold_frames=args.body_hold_frames,
         hand_hold_frames=args.hand_hold_frames,
         hold_confidence_decay=args.hold_confidence_decay,
+        max_people=args.max_people,
+        person_detector_scale=args.person_detector_scale,
+        person_box_scale=args.person_box_scale,
+        person_track_hold_frames=args.person_track_hold_frames,
+        person_match_threshold=args.person_match_threshold,
+        person_cross_wrist_ratio=args.person_cross_wrist_ratio,
+        yolo_tracker=args.yolo_tracker,
+        yolo_device=args.yolo_device,
+        identity_hints=dict(args.identity_hints or []),
     )
 
 
+def run_multi_person_assignment(config: PipelineConfig) -> None:
+    try:
+        prepare_model_assets(config)
+    except Exception as exc:
+        print(f"Error: failed to prepare model assets: {exc}")
+        return
+    if not validate_config(config):
+        return
+
+    assert config.output_path is not None
+    session = VideoCaptureSession(
+        config.video_path,
+        config.output_path,
+        fallback_fps=config.fallback_fps,
+        output_fourcc=config.output_fourcc,
+    )
+    runner = ONNXPoseHandRunner(config)
+    osc_sender = OSCSender(config.osc_host, config.osc_port, config.osc_enabled)
+    tracker = MultiPersonTracker(config, runner)
+    motion_frames: list[dict[str, object]] = []
+    frame_index = 0
+
+    try:
+        while True:
+            ok, frame = session.read()
+            if not ok or frame is None:
+                break
+
+            people = tracker.update(frame)
+            payload_people: list[dict[str, object]] = []
+            for track in people:
+                track.pipeline.render_pose(frame, track.body_points, track.hands_by_side, send_osc=False)
+                x1, y1, x2, y2 = track.box
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 200, 255), 2)
+                label = track.label or f"person{track.id}"
+                cv2.putText(frame, label, (x1, max(20, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
+                payload_people.append(
+                    {
+                        "id": track.id,
+                        "label": label,
+                        "box": track.box,
+                        "body_points": track.body_points,
+                        "hands_by_side": track.hands_by_side,
+                        "joints": build_joint_map(track.body_points, track.hands_by_side),
+                    }
+                )
+
+            osc_sender.send_people(payload_people)
+            motion_frames.append({"frame_index": frame_index, "people": payload_people})
+            frame_index += 1
+            session.write(frame)
+
+            if config.enable_preview:
+                cv2.imshow(config.preview_window_title, frame)
+                if cv2.waitKey(1) & 0xFF == 27:
+                    break
+    finally:
+        session.close()
+        osc_sender.close()
+        cv2.destroyAllWindows()
+
+    export_multi_person_json(
+        config.json_output_path,
+        fps=session.fps,
+        frames=motion_frames,
+        metadata={
+            "mode": "multi_person",
+            "source": str(config.video_path),
+            "max_people": config.max_people,
+            "identity_hints": {key: list(value) for key, value in config.identity_hints.items()},
+        },
+    )
+    print(f"Saved: {config.output_path}")
+    print(f"Saved: {config.json_output_path}")
+    print("Skipped FBX export for multi-person mode.")
+
+
 def run_assignment(config: PipelineConfig) -> None:
+    if config.max_people > 1:
+        run_multi_person_assignment(config)
+        return
     try:
         prepare_model_assets(config)
     except Exception as exc:
@@ -661,7 +784,12 @@ def run_assignment(config: PipelineConfig) -> None:
 
             body_points, hands_by_side = pipeline.detect_pose(frame)
             pipeline.render_pose(frame, body_points, hands_by_side)
-            motion_frames.append(build_motion_frame(frame_index, body_points, hands_by_side))
+            motion_frames.append(
+                {
+                    "frame_index": frame_index,
+                    "joints": build_joint_map(body_points, hands_by_side),
+                }
+            )
             frame_index += 1
             rendered = frame
             session.write(rendered)
@@ -688,17 +816,14 @@ def run_assignment(config: PipelineConfig) -> None:
     )
     print(f"Saved: {config.output_path}")
     print(f"Saved: {config.json_output_path}")
-    print(f"Saved: {config.bvh_output_path}")
     print(f"Saved: {config.fbx_output_path}")
 
 
 def run_fused_assignments(
     assignments: list[InputAssignment],
     args: argparse.Namespace,
-    body_model_variant: str,
-    hand_model_variant: str,
 ) -> None:
-    config = build_fused_config(args, assignments, body_model_variant, hand_model_variant)
+    config = build_fused_config(args, assignments)
     try:
         prepare_model_assets(config)
     except Exception as exc:
@@ -778,7 +903,12 @@ def run_fused_assignments(
 
             canvas = frames_by_label[reference_label].copy()
             fused_renderer.render_pose(canvas, fused_body, fused_hands, send_osc=True)
-            motion_frames.append(build_motion_frame(frame_index, fused_body, fused_hands))
+            motion_frames.append(
+                {
+                    "frame_index": frame_index,
+                    "joints": build_joint_map(fused_body, fused_hands),
+                }
+            )
             frame_index += 1
             writer.write(canvas)
 
@@ -808,36 +938,28 @@ def run_fused_assignments(
     )
     print(f"Saved: {config.output_path}")
     print(f"Saved: {config.json_output_path}")
-    print(f"Saved: {config.bvh_output_path}")
     print(f"Saved: {config.fbx_output_path}")
 
 
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    try:
-        body_model_variant, hand_model_variant = resolve_model_variants(args.model_assignments)
-    except ValueError as exc:
-        parser.error(str(exc))
 
     assignments = resolve_sources(args)
     if not assignments:
         return
 
     if len(assignments) > 1:
+        if args.max_people > 1:
+            print("Error: multi-person tracking is currently supported only for a single camera/source.")
+            return
         print("Running synchronized multi-camera fusion...")
-        run_fused_assignments(assignments, args, body_model_variant, hand_model_variant)
+        run_fused_assignments(assignments, args)
         return
 
     for assignment in assignments:
         print(f"Running pipeline for {assignment.label}...")
-        config = build_config_for_assignment(
-            args,
-            assignment,
-            body_model_variant,
-            hand_model_variant,
-            False,
-        )
+        config = build_config_for_assignment(args, assignment, False)
         run_assignment(config)
 
 

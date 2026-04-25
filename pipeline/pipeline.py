@@ -3,6 +3,8 @@ from __future__ import annotations
 import cv2
 
 from config import BODY_EDGES, BODY_KEYPOINTS, HAND_EDGES, WRIST_TO_ELBOW
+from utils.hand_constraints import enforce_hand_constraints
+from utils.hand_fallback import anchor_hand_to_wrist, generate_default_hand, is_hand_detection_valid
 from utils.normalize import build_hand_box
 
 
@@ -19,10 +21,14 @@ class PoseHandPipeline:
         return frame
 
     def detect_pose(self, frame):
-        frame_height, frame_width = frame.shape[:2]
         body_points = self.smoother.smooth_body(self.runner.detect_body(frame))
         if body_points is None:
             body_points = [(0, 0, 0.0) for _ in range(17)]
+        hands_by_side = self.detect_hands(frame, body_points)
+        return body_points, hands_by_side
+
+    def detect_hands(self, frame, body_points):
+        frame_height, frame_width = frame.shape[:2]
         hands_by_side = {}
 
         for wrist_idx, elbow_idx in WRIST_TO_ELBOW.items():
@@ -40,14 +46,27 @@ class PoseHandPipeline:
                 frame_height,
                 self.config.hand_box_min_size,
                 self.config.hand_box_scale,
+                self.config.hand_box_forward_shift,
             )
 
-            hand_points = self.runner.detect_hand(frame, box)
-            hand_points = self.smoother.smooth_hand(side, hand_points)
-            if hand_points is not None:
-                hands_by_side[side] = {"box": box, "points": hand_points}
+            raw_hand_points = self.runner.detect_hand(frame, box)
+            if not is_hand_detection_valid(raw_hand_points, wrist_point, elbow_point, self.config):
+                raw_hand_points = None
 
-        return body_points, hands_by_side
+            hand_points = self.smoother.smooth_hand(side, raw_hand_points)
+            if hand_points is not None:
+                hand_points = anchor_hand_to_wrist(hand_points, wrist_point)
+                hand_points = enforce_hand_constraints(hand_points)
+                if not is_hand_detection_valid(hand_points, wrist_point, elbow_point, self.config):
+                    hand_points = None
+
+            if hand_points is None:
+                hand_points = generate_default_hand(wrist_point, elbow_point, side, self.config)
+                hand_points = enforce_hand_constraints(hand_points)
+
+            hands_by_side[side] = {"box": box, "points": hand_points}
+
+        return hands_by_side
 
     def render_pose(self, frame, body_points, hands_by_side, send_osc: bool = True) -> None:
         if body_points is None:

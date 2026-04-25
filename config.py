@@ -3,13 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-
 @dataclass(slots=True)
 class PipelineConfig:
     project_root: Path = field(default_factory=lambda: Path(__file__).resolve().parent)
-    body_model_path: Path | None = None
+    body_model_path: str | Path | None = None
     hand_model_path: Path | None = None
-    body_model_variant: str = "max"
+    body_model_variant: str = "yolo11x-pose.pt"
     hand_model_variant: str = "max"
     video_path: int | Path = 0
     output_path: Path | None = None
@@ -19,13 +18,29 @@ class PipelineConfig:
     body_input_dtype: str = "int32"
     hand_input_name: str = "images"
     hand_input_dtype: str = "float32"
-    body_input_size: int = 192
+    body_input_size: int = 960
     hand_input_size: int = 640
     body_conf_threshold: float = 0.30
+    body_iou_threshold: float = 0.45
     hand_det_threshold: float = 0.15
     hand_kp_threshold: float = 0.20
     hand_box_min_size: int = 160
     hand_box_scale: float = 2.0
+    hand_box_forward_shift: float = 0.35
+    hand_wrist_max_offset_scale: float = 0.65
+    hand_min_valid_points: int = 8
+    hand_default_confidence: float = 0.55
+    hand_default_scale: float = 0.85
+    max_people: int = 1
+    person_detector_scale: float = 1.05
+    person_box_scale: float = 1.15
+    person_track_hold_frames: int = 10
+    identity_hints: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    identity_min_score: float = 0.05
+    person_match_threshold: float = 0.15
+    person_cross_wrist_ratio: float = 0.90
+    yolo_tracker: str = "botsort.yaml"
+    yolo_device: str | None = None
     enable_preview: bool = True
     provider_names: tuple[str, ...] = ("CUDAExecutionProvider",)
     preview_window_title: str = "Pose + Hand Landmarks"
@@ -53,11 +68,10 @@ class PipelineConfig:
     video_extension: str = field(init=False)
     rendered_output_path: Path = field(init=False)
     fbx_output_path: Path = field(init=False)
-    bvh_output_path: Path = field(init=False)
     json_output_path: Path = field(init=False)
 
     def __post_init__(self) -> None:
-        if self.body_model_path is not None:
+        if self.body_model_path is not None and isinstance(self.body_model_path, Path):
             self.body_model_path = Path(self.body_model_path)
 
         if self.hand_model_path is not None:
@@ -92,7 +106,6 @@ class PipelineConfig:
         self.run_index = self._next_run_index(base_name)
         self.rendered_output_path = resolved_output_directory / f"{base_name} rendered-{self.run_index}{self.video_extension}"
         self.fbx_output_path = resolved_output_directory / f"{base_name} fbx-{self.run_index}.fbx"
-        self.bvh_output_path = resolved_output_directory / f"{base_name} bvh-{self.run_index}.bvh"
         self.json_output_path = resolved_output_directory / f"{base_name} json-{self.run_index}.json"
         self.output_path = self.rendered_output_path
         self.output_fourcc = self.output_fourcc[:4].ljust(4)
@@ -105,7 +118,6 @@ class PipelineConfig:
             sibling_paths = (
                 output_directory / f"{base_name} rendered-{run_index}{self.video_extension}",
                 output_directory / f"{base_name} fbx-{run_index}.fbx",
-                output_directory / f"{base_name} bvh-{run_index}.bvh",
                 output_directory / f"{base_name} json-{run_index}.json",
             )
             if not any(path.exists() for path in sibling_paths):
