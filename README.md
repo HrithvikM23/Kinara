@@ -1,8 +1,12 @@
 # Human Motion Tracking Pipeline (Kinara)
 
-An ONNX Runtime based human motion tracking pipeline that captures body pose and hand landmarks from webcam or video input, supports optional multi-camera fusion, and produces rendered tracking outputs for downstream animation or motion processing workflows.
+Kinara is a local video and webcam motion-tracking pipeline built around a YOLO body pose model and an ONNX hand pose model. It supports single-person tracking, single-camera multi-person tracking, optional multi-camera fusion, live UDP output for Unreal-side receivers, and stack-safe recorded outputs.
 
-This branch is the ONNX-based tracking path. It focuses on configurable local inference, stack-safe output generation, automatic model setup, and synchronized multi-camera fusion in a shared 2D reference space.
+This branch is currently optimized for practical local runtime use:
+- YOLO body tracking for both single-person and multi-person flows
+- ONNX hand tracking with fallback hands and anatomical cleanup
+- clothing-hint assisted multi-person identity stability
+- rendered video, JSON, and FBX outputs
 
 ---
 
@@ -12,23 +16,25 @@ This branch is the ONNX-based tracking path. It focuses on configurable local in
 
 - Webcam or video file input
 - 16 GB RAM recommended
-- NVIDIA GPU recommended for faster inference
+- NVIDIA GPU strongly recommended for YOLO pose inference
 - Multi-camera setup optional
 
 ## Required Software
 
-| Tool | Version | Notes |
-| --- | --- | --- |
-| Python | 3.10+ | Pipeline runtime |
-| ONNX Runtime | Latest compatible | CPU or GPU execution |
-| CUDA Toolkit | 12.x | Optional GPU acceleration |
-| cuDNN | 9.x | Required for ONNX Runtime CUDA provider |
+```txt
+| Tool         | Version           | Notes                                 |
+| ---          | ---               | ---                                   |
+| Python       | 3.10+             | Pipeline runtime                      |
+| PyTorch      | Recent CUDA build | Needed for Ultralytics YOLO           |
+| Ultralytics  | Recent            | Body pose and multi-person tracking   |
+| ONNX Runtime | Latest compatible | Hand pose inference                   |
+| CUDA Toolkit | 12.x+             | Optional GPU acceleration             |
+| cuDNN        | 9.x               | Required for ONNX Runtime CUDA        |
+```
 
 ---
 
 # Installation
-
-Follow these steps in order.
 
 ## 1. Install Python
 
@@ -36,61 +42,46 @@ Download from:
 
 [https://www.python.org/downloads/](https://www.python.org/downloads/)
 
-During installation, enable Python on `PATH` if you want to launch it directly from terminal.
+Enable Python on `PATH` during installation if you want terminal launch support.
 
 ---
 
-## 2. Install CUDA Toolkit (Optional)
+## 2. Install NVIDIA Runtime Stack (Optional but Recommended)
 
-Download from:
-
-[https://developer.nvidia.com/cuda-downloads](https://developer.nvidia.com/cuda-downloads)
-
-Use CUDA 12.x if you want GPU inference through ONNX Runtime.
-
----
-
-## 3. Install cuDNN (Optional, Required for CUDAExecutionProvider)
-
-1. Download cuDNN 9.x for CUDA 12.x from NVIDIA
-2. Install or extract it
-3. Make sure the cuDNN `bin` directory is available on `PATH`
-
-Typical example:
+Install:
 
 ```txt
-C:\Program Files\NVIDIA\CUDNN\v9.21\bin\12.9\x64
+- recent NVIDIA driver
+- CUDA 12.x or newer
+- cuDNN 9.x
 ```
 
-If `cudnn64_9.dll` is missing, ONNX Runtime CUDA will fail and you should either fix `PATH` or run with CPU provider.
+If ONNX Runtime reports a missing `cudnn64_9.dll`, add your cuDNN `bin` directory to `PATH`.
 
 ---
 
-## 4. Install Python Dependencies
+## 3. Install Python Dependencies
 
-GPU path:
+Example GPU setup:
 
 ```bash
-pip install numpy opencv-python onnxruntime-gpu
+pip install ultralytics torch torchvision numpy opencv-python onnxruntime-gpu
 ```
 
-CPU-only path:
+CPU-only hand inference fallback:
 
 ```bash
-pip install numpy opencv-python onnxruntime
+pip install ultralytics torch torchvision numpy opencv-python onnxruntime
 ```
 
 ---
 
-## 5. Set Up the Project
+## 4. Clone The Project
 
 ```bash
-cd D:\IDT
 git clone https://github.com/HrithvikM23/Kinara.git
 cd Kinara
 ```
-
-The pipeline downloads the default ONNX presets automatically on first run if they are missing.
 
 ---
 
@@ -99,151 +90,188 @@ The pipeline downloads the default ONNX presets automatically on first run if th
 ```txt
 Webcam / Video File(s)
         ↓
-Per-View ONNX Body Detection
+YOLO Body Pose Detection
         ↓
-Per-View Hand Detection
+Per-Person Hand Detection
         ↓
-Temporal Smoothing + Landmark Hold
+Temporal Smoothing + Hold + Fallback
         ↓
-Multi-Camera Fusion (optional)
+Identity Stabilization / Cross-Person Hand Guard
         ↓
-Rendered Tracking Output
+Rendered Output / JSON / FBX / Live UDP
 ```
 
 ---
 
 # Tracking System
 
-### Body Tracking
+## Body Tracking
 
-Body tracking uses an ONNX MoveNet preset:
+Body tracking uses an Ultralytics YOLO pose model.
 
-- `low`, `mid` -> MoveNet Lightning
-- `high`, `max` -> MoveNet Thunder
+Default body model:
 
-The current pipeline uses the single-person body keypoint structure expected by the ONNX model loaded at runtime.
+```txt
+yolo11x-pose.pt
+```
 
----
+You can replace it with any compatible YOLO pose weights file through `--model`.
 
-### Hand Tracking
+If you pass a known YOLO filename such as `yolo11x-pose.pt`, `yolo11l-pose.pt`, `yolo11m-pose.pt`, `yolo11s-pose.pt`, or `yolo11n-pose.pt` and it is missing, Kinara downloads it directly into:
 
-Hand tracking uses a YOLO26 hand-pose ONNX preset:
+```txt
+models/body/
+```
 
+## Hand Tracking
+
+Hand tracking uses a YOLO26 hand-pose ONNX model.
+
+Preset mapping:
 - `low`, `mid` -> FP16 variant
 - `high`, `max` -> FP32 variant
 
+Downloaded hand models are stored in:
+
+```txt
+models/hand/
+```
+
 Each hand outputs 21 landmarks.
+
+## Hand Robustness Layer
+
+The hand pipeline includes:
+
+```txt
+- wrist-directed crop generation
+- temporal hold when a hand briefly disappears
+- wrist-attached default hand fallback
+- anatomical cleanup and distance constraints
+- cross-person hand ownership rejection in multi-person mode
+```
 
 ---
 
-# Landmark Output
+# Output Types
 
-Current runtime output includes:
+## Single-Person
+
+Single-person runs currently write:
 
 ```txt
-Body      : 17 keypoints
-LeftHand  : 21 keypoints
-RightHand : 21 keypoints
-```
-
-Each run now writes:
-
 - rendered tracking video
 - motion JSON export
-- BVH export
 - FBX export
+```
+
+## Multi-Person
+
+Single-camera multi-person runs currently write:
+
+```txt
+- rendered tracking video
+- multi-person JSON export
+- live UDP packets
+```
+
+Multi-person FBX export is not the default output path yet.
+
+---
+
+# Multi-Person Tracking
+
+Single-camera multi-person mode is currently the supported path.
+
+It uses:
+
+```txt
+- YOLO pose detections and tracker IDs
+- box continuity
+- optional clothing color hints
+- wrist ownership checks to reduce hand stealing during crossings
+```
+
+Example identity hints:
+
+```bash
+py main.py --source ".\two_people.mp4" --max-people 2 --identity person1=black,orange --identity person2=gray,silver
+```
+
+Important limitation:
+
+Multi-camera plus multi-person at the same time is not the current default workflow.
 
 ---
 
 # Multi-Camera Support
 
-Default primary camera: `FRONT`
+Multi-camera mode currently supports:
 
-Optional additional roles:
+```txt
+- FRONT
+- BACK
+- LEFT
+- RIGHT
+```
 
-- `BACK`
-- `LEFT`
-- `RIGHT`
-
-Each camera runs detection independently. During fusion, the system maps joints into a shared front-reference space and combines them with confidence weighting.
-
-Important note:
-
-This is currently 2D multi-view fusion, not calibration-aware 3D reconstruction. It improves robustness when one view loses a joint, but it is not full motion-capture triangulation.
+The current fusion path is still shared-reference 2D fusion, not full calibration-aware 3D reconstruction.
 
 ---
 
 # Model Management
 
-Default model files:
+Repo-managed model downloads go directly into the local `models/` tree:
 
 ```txt
-models/body/movenet_thunder.onnx
-models/hand/yolo26_hand_pose_fp32.onnx
+models/body/
+models/hand/
 ```
 
-If they are missing, the pipeline downloads them automatically on first run.
-
-You can also override the presets with explicit paths or choose different presets through CLI arguments. See [args.md](D:\IDT\Kinara\args.md).
+That means body and hand weights stay inside the project instead of being left in external caches.
 
 ---
 
-# Video Output System
+# Live UDP Output
 
-Rendered outputs are stack-safe and never overwrite previous runs.
+Kinara can stream live UDP packets for downstream receivers such as Unreal-side runtime tools.
+
+Current packet content includes:
+
+```txt
+- person IDs
+- person labels
+- body landmarks
+- hand landmarks
+- hand boxes
+```
+
+See [args.md](https://github.com/HrithvikM23/Kinara/blob/kinara/cortex/args.md) for host/port flags.
+
+---
+
+# Output Naming
+
+Rendered and export outputs are stack-safe and never overwrite previous runs.
 
 Example:
 
 ```txt
 outputs/dance rendered-1.mp4
 outputs/dance json-1.json
-outputs/dance bvh-1.bvh
 outputs/dance fbx-1.fbx
 ```
 
 The next run becomes `-2`, then `-3`, and so on.
 
-For fused multi-camera runs, the pipeline automatically uses a fused basename:
-
-```txt
-outputs/dance_fused rendered-N.mp4
-```
-
 ---
 
-# FPS and Resolution
-
-- Single source: uses that source FPS
-- Multiple sources: fused output currently uses the reference camera FPS
-- Fallback FPS can be supplied for sources that report invalid FPS
-- Output writer codec can be changed via CLI
-
----
-
-# Project Structure
-
-```txt
-Kinara/
-|-- main.py
-|-- config.py
-|-- args.md
-|-- camera/
-|-- inference/
-|-- network/
-|-- pipeline/
-|-- utils/
-|-- outputs/
-`-- models/
-```
-
----
-
-# How to Run
+# How To Run
 
 ## Interactive Mode
 
 ```bash
-cd D:\IDT\Kinara
+cd [drive]:\[path]\Kinara
 py main.py
 ```
 
@@ -264,112 +292,102 @@ Press `ESC` to close preview windows.
 
 ## Example Commands
 
-Single video:
+Single-person:
 
 ```bash
-py main.py --source "C:\path\to\video.mp4"
+py main.py --source ".\video.mp4" --model yolo11x-pose.pt
 ```
 
-CPU-only fallback:
+Single-person with CPU hand fallback:
 
 ```bash
-py main.py --source "C:\path\to\video.mp4" --provider CPUExecutionProvider
+py main.py --source ".\video.mp4" --model yolo11x-pose.pt --provider CPUExecutionProvider
 ```
 
-Explicit provider priority:
+Two-person tracking:
 
 ```bash
-py main.py --source 0 --provider CUDAExecutionProvider --provider CPUExecutionProvider
+py main.py --source ".\two_people.mp4" --model yolo11x-pose.pt --max-people 2
 ```
 
-Alternate model presets:
+Two-person tracking with identity hints:
 
 ```bash
-py main.py --source 0 --model movenet=max --model hand=high
+py main.py --source ".\two_people.mp4" --model yolo11x-pose.pt --max-people 2 --identity person1=black,orange --identity person2=gray,silver
 ```
 
-All CLI arguments are documented in [args.md](D:\IDT\Kinara\args.md).
+All CLI arguments are documented in [args.md](https://github.com/HrithvikM23/Kinara/blob/kinara/cortex/args.md).
 
 ---
 
 # Current Development Status
 
-| Component | Status |
-| --- | --- |
-| Webcam input | Complete |
-| Video file input | Complete |
-| Interactive source selection | Complete |
-| Camera role selection | Complete |
-| Multi-camera synchronized input | Complete |
-| ONNX body tracking | Complete |
-| ONNX hand tracking | Complete |
-| Automatic model download | Complete |
-| Stack-safe output naming | Complete |
-| Temporal smoothing | Complete |
-| 2D confidence-based fusion | Complete |
-| Rendered output video | Complete |
-| JSON export generation | Complete |
-| BVH export generation | Complete |
-| FBX export generation | Complete |
-| OSC payload output | Placeholder |
-| Calibration-aware 3D fusion | Planned |
-| Multi-person tracking | Planned |
+```txt
+| Component                           | Status   |
+| ---                                 | ---      |
+| Webcam input                        | Complete |
+| Video file input                    | Complete |
+| Interactive source selection        | Complete |
+| Camera role selection               | Complete |
+| Multi-camera synchronized input     | Complete |
+| YOLO single-person body tracking    | Complete |
+| YOLO multi-person body tracking     | Working  |
+| ONNX hand tracking                  | Complete |
+| Clothing color identity hints       | Working  |
+| Cross-person hand guard             | Working  |
+| Automatic model download to models/ | Complete |
+| Stack-safe output naming            | Complete |
+| Temporal smoothing                  | Complete |
+| Rendered output video               | Complete |
+| JSON export generation              | Complete |
+| FBX export generation               | Complete |
+| Live UDP streaming                  | Working  |
+| Multi-person FBX export             | Planned  |
+| Calibration-aware 3D fusion         | Planned  |
+| Multi-camera + multi-person         | Planned  |
+```
 
 ---
 
 # Roadmap
 
-### 3D Fusion
+## Multi-Person Export
+
+Add stable per-person FBX export once the current identity and hand ownership path is fully validated.
+
+## 3D Fusion
 
 Add calibration-aware multi-camera fusion with true cross-view geometry instead of shared 2D reference-space blending.
 
-### Motion Export
+## Runtime Streaming
 
-Improve the current JSON, BVH, and FBX exports with richer skeleton metadata, rotation solving, and downstream animation compatibility.
-
-### Runtime Streaming
-
-Replace the current OSC placeholder with a structured live motion streaming layer for downstream animation tools.
+Keep the current UDP live-motion path and add an Unreal-side receiver/parser workflow once the packet schema stabilizes.
 
 ---
 
 # Technology Stack
 
-### Inference
+## Inference
 
+- Ultralytics YOLO pose
 - ONNX Runtime
-- MoveNet ONNX
 - YOLO26 hand pose ONNX
 
-### Computer Vision
+## Computer Vision
 
 - OpenCV
 - NumPy
 - Python
 
-### Fusion and Stabilization
+## Stabilization
 
-- Confidence-weighted multi-view fusion
 - Exponential landmark smoothing
-- Short-term landmark persistence
-
----
-
-# Project Phase
-
-Alpha Development
-
-Current focus:
-
-```txt
-Multi-Camera Fusion Stability
-Motion Export Foundation
-Provider Robustness
-Type-Safe Runtime Cleanup
-```
+- Landmark hold / decay
+- Default hand fallback
+- Cross-person hand ownership filtering
 
 ---
 
 # License
 
-See [LICENSE.md](D:\IDT\Kinara\LICENSE.md).
+See [LICENSE.md](https://github.com/HrithvikM23/Kinara/blob/kinara/cortex/LICENSE.md).
