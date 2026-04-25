@@ -87,7 +87,7 @@ YOLO and Mask R-CNN use PyTorch, so CUDA and cuDNN are used through PyTorch when
 ## 5. Set Up the Project
 
 ```bash
-cd D:\IDT
+cd [drive]:\[path]
 git clone https://github.com/HrithvikM23/Kinara.git
 
 cd Kinara\Kinara_Unreal
@@ -261,7 +261,7 @@ Kinara/
 ## Step 2 - Run the Python Pipeline
 
 ```bash
-cd D:\IDT\Kinara\Kinara_Unreal
+cd [drive]:[path]\Kinara\Kinara_Unreal
 python main.py
 ```
 
