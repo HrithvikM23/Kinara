@@ -11,6 +11,9 @@ __pycache__/
 venv/
 .env/
 .envrc
+.vendor_py*/
+.ultralytics/
+.venv/
 
 # ----------------------
 # Logs & runtime outputs
