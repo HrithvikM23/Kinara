@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,15 +17,27 @@ class JointSpec:
     parent: str | None
 
 
+Point = tuple[int, int, float]
+JointValue = dict[str, float]
+JointMap = dict[str, JointValue]
+FACE_POINT_INDICES = (0, 1, 2, 3, 4)
+
+
 SKELETON: tuple[JointSpec, ...] = (
     JointSpec("HipsRoot", None),
     JointSpec("LeftHip", "HipsRoot"),
     JointSpec("LeftKnee", "LeftHip"),
     JointSpec("LeftAnkle", "LeftKnee"),
+    JointSpec("LeftFoot", "LeftAnkle"),
+    JointSpec("LeftToeBase", "LeftFoot"),
     JointSpec("RightHip", "HipsRoot"),
     JointSpec("RightKnee", "RightHip"),
     JointSpec("RightAnkle", "RightKnee"),
+    JointSpec("RightFoot", "RightAnkle"),
+    JointSpec("RightToeBase", "RightFoot"),
     JointSpec("Chest", "HipsRoot"),
+    JointSpec("Neck", "Chest"),
+    JointSpec("Head", "Neck"),
     JointSpec("LeftShoulder", "Chest"),
     JointSpec("LeftElbow", "LeftShoulder"),
     JointSpec("LeftWrist", "LeftElbow"),
@@ -121,7 +134,11 @@ def _to_world(x: int, y: int, z: float = 0.0) -> tuple[float, float, float]:
     return float(x), float(-y), float(z)
 
 
-def _average_points(points: list[tuple[int, int, float]]) -> tuple[float, float, float, float]:
+def _to_world_float(x: float, y: float, z: float = 0.0) -> tuple[float, float, float]:
+    return float(x), float(-y), float(z)
+
+
+def _average_points(points: list[Point]) -> tuple[float, float, float, float]:
     point_count = len(points)
     sum_x = 0
     sum_y = 0
@@ -134,22 +151,118 @@ def _average_points(points: list[tuple[int, int, float]]) -> tuple[float, float,
     return x, y, z, float(sum_conf / point_count)
 
 
-def _zero_joint() -> dict[str, float]:
+def _average_screen_points(points: list[Point]) -> tuple[float, float, float]:
+    point_count = max(len(points), 1)
+    sum_x = 0.0
+    sum_y = 0.0
+    sum_conf = 0.0
+    for x, y, conf in points:
+        sum_x += float(x)
+        sum_y += float(y)
+        sum_conf += float(conf)
+    return sum_x / point_count, sum_y / point_count, sum_conf / point_count
+
+
+def _make_joint(x: float, y: float, z: float, confidence: float) -> JointValue:
+    return {
+        "x": float(x),
+        "y": float(y),
+        "z": float(z),
+        "confidence": max(0.0, float(confidence)),
+    }
+
+
+def _zero_joint() -> JointValue:
     return {"x": 0.0, "y": 0.0, "z": 0.0, "confidence": 0.0}
 
 
+def _lerp(start: float, end: float, alpha: float) -> float:
+    return start + (end - start) * alpha
+
+
+def _derive_head_joints(body_points: list[Point], joint_depths: dict[str, float]) -> tuple[JointValue, JointValue]:
+    shoulders = [body_points[5], body_points[6]]
+    hips = [body_points[11], body_points[12]]
+    shoulder_x, shoulder_y, shoulder_conf = _average_screen_points(shoulders)
+    hip_x, hip_y, hip_conf = _average_screen_points(hips)
+    face_points = [body_points[index] for index in FACE_POINT_INDICES if body_points[index][2] > 0.0]
+
+    if face_points:
+        face_x, face_y, face_conf = _average_screen_points(face_points)
+        neck_x = _lerp(shoulder_x, face_x, 0.35)
+        neck_y = _lerp(shoulder_y, face_y, 0.35)
+        head_x = _lerp(shoulder_x, face_x, 0.85)
+        head_y = _lerp(shoulder_y, face_y, 0.85)
+        derived_conf = (shoulder_conf + face_conf) * 0.5
+    else:
+        torso_dx = shoulder_x - hip_x
+        torso_dy = shoulder_y - hip_y
+        torso_length = math.hypot(torso_dx, torso_dy)
+        if torso_length <= 1e-6:
+            unit_x, unit_y = 0.0, -1.0
+            torso_length = 32.0
+        else:
+            unit_x = torso_dx / torso_length
+            unit_y = torso_dy / torso_length
+        neck_x = shoulder_x
+        neck_y = shoulder_y
+        head_x = shoulder_x + unit_x * max(torso_length * 0.35, 18.0)
+        head_y = shoulder_y + unit_y * max(torso_length * 0.35, 18.0)
+        derived_conf = (shoulder_conf + hip_conf) * 0.5
+
+    shoulder_depth = float((joint_depths.get("LeftShoulder", 0.0) + joint_depths.get("RightShoulder", 0.0)) * 0.5)
+    head_depth = shoulder_depth
+    neck_world = _to_world_float(neck_x, neck_y, shoulder_depth)
+    head_world = _to_world_float(head_x, head_y, head_depth)
+    return (
+        _make_joint(neck_world[0], neck_world[1], neck_world[2], derived_conf),
+        _make_joint(head_world[0], head_world[1], head_world[2], derived_conf),
+    )
+
+
+def _derive_foot_chain(
+    knee_point: Point,
+    ankle_point: Point,
+    foot_depth: float,
+) -> tuple[JointValue, JointValue]:
+    dx = float(ankle_point[0] - knee_point[0])
+    dy = float(ankle_point[1] - knee_point[1])
+    shin_length = math.hypot(dx, dy)
+    if shin_length <= 1e-6:
+        unit_x, unit_y = 0.0, 1.0
+        shin_length = 24.0
+    else:
+        unit_x = dx / shin_length
+        unit_y = dy / shin_length
+
+    foot_length = max(shin_length * 0.35, 12.0)
+    toe_length = max(shin_length * 0.25, 10.0)
+    foot_x = float(ankle_point[0]) + unit_x * foot_length
+    foot_y = float(ankle_point[1]) + unit_y * foot_length
+    toe_x = foot_x + unit_x * toe_length
+    toe_y = foot_y + unit_y * toe_length
+    derived_conf = min(float(knee_point[2]), float(ankle_point[2]))
+
+    foot_world = _to_world_float(foot_x, foot_y, foot_depth)
+    toe_world = _to_world_float(toe_x, toe_y, foot_depth)
+    return (
+        _make_joint(foot_world[0], foot_world[1], foot_world[2], derived_conf),
+        _make_joint(toe_world[0], toe_world[1], toe_world[2], derived_conf),
+    )
+
+
 def build_joint_map(
-    body_points,
-    hands_by_side,
+    body_points: list[Point],
+    hands_by_side: dict[str, dict[str, object]],
     joint_depths: dict[str, float] | None = None,
-) -> dict[str, dict[str, float]]:
-    joint_map: dict[str, dict[str, float]] = {joint.name: _zero_joint() for joint in SKELETON}
+) -> JointMap:
+    joint_map: JointMap = {joint.name: _zero_joint() for joint in SKELETON}
     joint_depths = joint_depths or {}
 
     for name, index in BODY_NAME_TO_INDEX.items():
         x, y, conf = body_points[index]
         wx, wy, wz = _to_world(x, y, joint_depths.get(name, 0.0))
-        joint_map[name] = {"x": wx, "y": wy, "z": wz, "confidence": float(conf)}
+        joint_map[name] = _make_joint(wx, wy, wz, conf)
 
     hips = [body_points[11], body_points[12]]
     shoulders = [body_points[5], body_points[6]]
@@ -157,23 +270,34 @@ def build_joint_map(
     chest_x, chest_y, _, chest_conf = _average_points(shoulders)
     root_z = float((joint_depths.get("LeftHip", 0.0) + joint_depths.get("RightHip", 0.0)) * 0.5)
     chest_z = float((joint_depths.get("LeftShoulder", 0.0) + joint_depths.get("RightShoulder", 0.0)) * 0.5)
-    joint_map["HipsRoot"] = {"x": root_x, "y": root_y, "z": root_z, "confidence": root_conf}
-    joint_map["Chest"] = {"x": chest_x, "y": chest_y, "z": chest_z, "confidence": chest_conf}
+    joint_map["HipsRoot"] = _make_joint(root_x, root_y, root_z, root_conf)
+    joint_map["Chest"] = _make_joint(chest_x, chest_y, chest_z, chest_conf)
+    joint_map["Neck"], joint_map["Head"] = _derive_head_joints(body_points, joint_depths)
+    joint_map["LeftFoot"], joint_map["LeftToeBase"] = _derive_foot_chain(
+        body_points[13],
+        body_points[15],
+        joint_depths.get("LeftAnkle", 0.0),
+    )
+    joint_map["RightFoot"], joint_map["RightToeBase"] = _derive_foot_chain(
+        body_points[14],
+        body_points[16],
+        joint_depths.get("RightAnkle", 0.0),
+    )
 
     for side_label, hand_payload in (("Left", hands_by_side.get("left")), ("Right", hands_by_side.get("right"))):
         if hand_payload is None:
             continue
-        hand_points = hand_payload["points"]
+        hand_points = cast(list[Point], hand_payload["points"])
         for suffix, index in HAND_NAME_TO_INDEX.items():
             x, y, conf = hand_points[index]
             wx, wy, wz = _to_world(x, y, joint_depths.get(f"{side_label}{suffix}", 0.0))
-            joint_map[f"{side_label}{suffix}"] = {"x": wx, "y": wy, "z": wz, "confidence": float(conf)}
+            joint_map[f"{side_label}{suffix}"] = _make_joint(wx, wy, wz, conf)
 
     return joint_map
 
 
-def _localize_joint_map(joint_map: dict[str, dict[str, float]]) -> dict[str, dict[str, float]]:
-    local_map: dict[str, dict[str, float]] = {}
+def _localize_joint_map(joint_map: JointMap) -> JointMap:
+    local_map: JointMap = {}
     for joint in SKELETON:
         current = joint_map[joint.name]
         if joint.parent is None:
@@ -189,25 +313,24 @@ def _localize_joint_map(joint_map: dict[str, dict[str, float]]) -> dict[str, dic
     return local_map
 
 
-def _frame_joint_map(frame: dict[str, object]) -> dict[str, dict[str, float]]:
-    return cast(dict[str, dict[str, float]], frame["joints"])
+def _frame_joint_map(frame: dict[str, object]) -> JointMap:
+    return cast(JointMap, frame["joints"])
 
 
-def _ground_joint_frames(frames: list[dict[str, object]]) -> list[dict[str, object]]:
-    min_y: float | None = None
+def _ground_joint_frames_on_axis(frames: list[dict[str, object]], axis: str) -> list[dict[str, object]]:
+    min_value: float | None = None
     for frame in frames:
         joints = frame["joints"]
         if not isinstance(joints, dict):
             continue
-        for joint in joints.values():
-            if not isinstance(joint, dict):
+        typed_joints = cast(JointMap, joints)
+        for joint in typed_joints.values():
+            if joint["confidence"] <= 0.0:
                 continue
-            if float(joint.get("confidence", 0.0)) <= 0.0:
-                continue
-            joint_y = float(joint["y"])
-            min_y = joint_y if min_y is None else min(min_y, joint_y)
+            joint_value = joint[axis]
+            min_value = joint_value if min_value is None else min(min_value, joint_value)
 
-    if min_y is None:
+    if min_value is None:
         return frames
 
     grounded_frames: list[dict[str, object]] = []
@@ -217,22 +340,27 @@ def _ground_joint_frames(frames: list[dict[str, object]]) -> list[dict[str, obje
             grounded_frames.append(frame)
             continue
 
-        grounded_joints: dict[str, dict[str, float]] = {}
-        for name, joint in joints.items():
-            if not isinstance(joint, dict):
-                continue
-            grounded_joints[name] = {
-                "x": float(joint["x"]),
-                "y": float(joint["y"]) - min_y,
-                "z": float(joint["z"]),
-                "confidence": float(joint["confidence"]),
+        grounded_joints: JointMap = {}
+        typed_joints = cast(JointMap, joints)
+        for name, joint in typed_joints.items():
+            grounded_joint = {
+                "x": joint["x"],
+                "y": joint["y"],
+                "z": joint["z"],
+                "confidence": joint["confidence"],
             }
+            grounded_joint[axis] = joint[axis] - min_value
+            grounded_joints[name] = grounded_joint
 
         grounded_frame = dict(frame)
         grounded_frame["joints"] = grounded_joints
         grounded_frames.append(grounded_frame)
 
     return grounded_frames
+
+
+def _ground_joint_frames(frames: list[dict[str, object]]) -> list[dict[str, object]]:
+    return _ground_joint_frames_on_axis(frames, "y")
 
 
 def _z_up_joint_frames(frames: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -263,49 +391,29 @@ def _z_up_joint_frames(frames: list[dict[str, object]]) -> list[dict[str, object
 
 
 def _ground_z_axis_frames(frames: list[dict[str, object]]) -> list[dict[str, object]]:
-    min_z: float | None = None
-    for frame in frames:
-        joints = frame["joints"]
-        if not isinstance(joints, dict):
-            continue
-        for joint in joints.values():
-            if not isinstance(joint, dict):
-                continue
-            if float(joint.get("confidence", 0.0)) <= 0.0:
-                continue
-            joint_z = float(joint["z"])
-            min_z = joint_z if min_z is None else min(min_z, joint_z)
-
-    if min_z is None:
-        return frames
-
-    grounded_frames: list[dict[str, object]] = []
-    for frame in frames:
-        joints = frame["joints"]
-        if not isinstance(joints, dict):
-            grounded_frames.append(frame)
-            continue
-
-        grounded_joints: dict[str, dict[str, float]] = {}
-        for name, joint in joints.items():
-            if not isinstance(joint, dict):
-                continue
-            grounded_joints[name] = {
-                "x": float(joint["x"]),
-                "y": float(joint["y"]),
-                "z": float(joint["z"]) - min_z,
-                "confidence": float(joint["confidence"]),
-            }
-
-        grounded_frame = dict(frame)
-        grounded_frame["joints"] = grounded_joints
-        grounded_frames.append(grounded_frame)
-
-    return grounded_frames
+    return _ground_joint_frames_on_axis(frames, "z")
 
 
 def _normalize_export_frames(frames: list[dict[str, object]]) -> list[dict[str, object]]:
     return _ground_z_axis_frames(_z_up_joint_frames(frames))
+
+
+def _write_motion_json(
+    output_path: Path,
+    format_name: str,
+    fps: float,
+    frames: list[dict[str, object]],
+    metadata: dict[str, object],
+) -> None:
+    payload = {
+        "format": format_name,
+        "fps": fps,
+        "frame_count": len(frames),
+        "metadata": metadata,
+        "frames": frames,
+    }
+    with output_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
 
 
 def export_motion_json(
@@ -317,15 +425,7 @@ def export_motion_json(
 ) -> None:
     if not frames_are_normalized:
         frames = _normalize_export_frames(frames)
-    payload = {
-        "format": "kinara-motion-json-v1",
-        "fps": fps,
-        "frame_count": len(frames),
-        "metadata": metadata,
-        "frames": frames,
-    }
-    with output_path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2)
+    _write_motion_json(output_path, "kinara-motion-json-v1", fps, frames, metadata)
 
 
 def export_multi_person_json(
@@ -334,15 +434,7 @@ def export_multi_person_json(
     frames: list[dict[str, object]],
     metadata: dict[str, object],
 ) -> None:
-    payload = {
-        "format": "kinara-multi-person-json-v1",
-        "fps": fps,
-        "frame_count": len(frames),
-        "metadata": metadata,
-        "frames": frames,
-    }
-    with output_path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2)
+    _write_motion_json(output_path, "kinara-multi-person-json-v1", fps, frames, metadata)
 
 
 def _sanitize_person_label(label: str) -> str:
@@ -351,8 +443,21 @@ def _sanitize_person_label(label: str) -> str:
     return cleaned or "person"
 
 
-def _empty_joint_map() -> dict[str, dict[str, float]]:
+def _empty_joint_map() -> JointMap:
     return {joint.name: _zero_joint() for joint in SKELETON}
+
+
+def _coerce_frame_index(value: object) -> int:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return 0
 
 
 def export_multi_person_fbx_bundle(
@@ -366,7 +471,7 @@ def export_multi_person_fbx_bundle(
     person_frames: dict[str, list[dict[str, object]]] = {}
 
     for frame in frames:
-        frame_index = int(frame.get("frame_index", 0))
+        frame_index = _coerce_frame_index(frame.get("frame_index"))
         present_people = frame.get("people", [])
         keyed_people: dict[str, dict[str, object]] = {}
         if isinstance(present_people, list):

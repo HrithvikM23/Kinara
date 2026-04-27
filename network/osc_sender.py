@@ -3,9 +3,15 @@ from __future__ import annotations
 import json
 import socket
 
+import config as app_config
 
 class OSCSender:
-    def __init__(self, host: str = "127.0.0.1", port: int = 9000, enabled: bool = False):
+    def __init__(
+        self,
+        host: str = app_config.LiveUdpDefaults.HOST,
+        port: int = app_config.LiveUdpDefaults.PORT,
+        enabled: bool = False,
+    ) -> None:
         self.host = host
         self.port = port
         self.enabled = enabled

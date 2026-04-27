@@ -3,6 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+class LiveUdpDefaults:
+    HOST = "127.0.0.1"
+    PORT = 9000
+    ENABLED = False
+
 @dataclass(slots=True)
 class PipelineConfig:
     project_root: Path = field(default_factory=lambda: Path(__file__).resolve().parent)
@@ -46,9 +51,9 @@ class PipelineConfig:
     enable_preview: bool = True
     provider_names: tuple[str, ...] = ("CUDAExecutionProvider",)
     preview_window_title: str = "Pose + Hand Landmarks"
-    osc_host: str = "127.0.0.1"
-    osc_port: int = 9000
-    osc_enabled: bool = False
+    osc_host: str = LiveUdpDefaults.HOST
+    osc_port: int = LiveUdpDefaults.PORT
+    osc_enabled: bool = LiveUdpDefaults.ENABLED
     fallback_fps: float = 30.0
     output_fourcc: str = "mp4v"
     body_line_color: tuple[int, int, int] = (255, 0, 0)

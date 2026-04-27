@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from utils.bootstrap_dependencies import ensure_runtime_ready
+
+ensure_runtime_ready()
+
 import argparse
 import cv2
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import config as app_config
 from camera.capture import VideoCaptureSession, VideoInputSource, VideoOutputWriter
 from config import PipelineConfig
 from inference.rtmpose import ONNXPoseHandRunner
@@ -21,7 +26,7 @@ from utils.exports import (
 )
 from utils.fusion import estimate_joint_depths, fuse_body_views, fuse_hand_views, load_camera_calibrations
 from utils.model_assets import DEFAULT_BODY_MODEL, HAND_MODEL_SPECS, ensure_body_model_file, ensure_model_file
-from utils.multi_person import COLOR_NAMES, MultiPersonTracker, PersonTrack
+from utils.multi_person import MultiPersonTracker, PersonTrack, color_profile_similarity
 from utils.smoothing import LandmarkSmoother
 
 
@@ -31,6 +36,7 @@ CAMERA_POSITION_OPTIONS = {
     "3": "RIGHT",
 }
 DEFAULT_MULTI_SOURCE_LABELS = ("FRONT", "BACK", "LEFT", "RIGHT")
+DEFAULT_PROVIDER_NAMES = ("CUDAExecutionProvider",)
 
 
 @dataclass(frozen=True, slots=True)
@@ -399,13 +405,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--osc-host",
-        default="127.0.0.1",
+        default=app_config.LiveUdpDefaults.HOST,
         help="Live UDP target host.",
     )
     parser.add_argument(
         "--osc-port",
         type=int,
-        default=9000,
+        default=app_config.LiveUdpDefaults.PORT,
         help="Live UDP target port.",
     )
     parser.add_argument(
@@ -596,6 +602,81 @@ def validate_config(config: PipelineConfig) -> bool:
     return True
 
 
+def _prepare_runtime_config(config: PipelineConfig) -> bool:
+    try:
+        prepare_model_assets(config)
+    except Exception as exc:
+        print(f"Error: failed to prepare model assets: {exc}")
+        return False
+    return validate_config(config)
+
+
+def _build_pipeline_config(
+    args: argparse.Namespace,
+    *,
+    video_path: int | Path,
+    output_path: Path | None,
+    output_basename: str | None,
+    preview_window_title: str,
+) -> PipelineConfig:
+    return PipelineConfig(
+        video_path=video_path,
+        output_path=output_path,
+        output_directory=args.output_dir,
+        output_basename=output_basename,
+        body_model_path=args.model,
+        hand_model_path=args.hand_model,
+        body_model_variant=args.model or DEFAULT_BODY_MODEL,
+        hand_model_variant=args.hand_model_variant,
+        body_input_name=args.body_input_name,
+        body_input_dtype="int32",
+        hand_input_name=args.hand_input_name,
+        hand_input_dtype="float32",
+        body_input_size=args.body_input_size,
+        hand_input_size=args.hand_input_size,
+        body_conf_threshold=args.body_conf_threshold,
+        body_iou_threshold=args.body_iou_threshold,
+        hand_det_threshold=args.hand_det_threshold,
+        hand_kp_threshold=args.hand_kp_threshold,
+        hand_box_min_size=args.hand_box_min_size,
+        hand_box_scale=args.hand_box_scale,
+        enable_preview=not args.no_preview,
+        provider_names=tuple(args.providers) if args.providers else DEFAULT_PROVIDER_NAMES,
+        preview_window_title=preview_window_title,
+        osc_host=args.osc_host,
+        osc_port=args.osc_port,
+        osc_enabled=args.osc_enabled,
+        fallback_fps=args.fallback_fps,
+        output_fourcc=args.output_fourcc,
+        body_line_color=args.body_line_color,
+        body_point_color=args.body_point_color,
+        hand_box_color=args.hand_box_color,
+        hand_line_color=args.hand_line_color,
+        hand_point_color=args.hand_point_color,
+        body_line_thickness=args.body_line_thickness,
+        body_point_radius=args.body_point_radius,
+        hand_box_thickness=args.hand_box_thickness,
+        hand_line_thickness=args.hand_line_thickness,
+        hand_point_radius=args.hand_point_radius,
+        body_smoothing_alpha=args.body_smoothing_alpha,
+        hand_smoothing_alpha=args.hand_smoothing_alpha,
+        body_hold_frames=args.body_hold_frames,
+        hand_hold_frames=args.hand_hold_frames,
+        hold_confidence_decay=args.hold_confidence_decay,
+        max_people=args.max_people,
+        person_detector_scale=args.person_detector_scale,
+        person_box_scale=args.person_box_scale,
+        person_track_hold_frames=args.person_track_hold_frames,
+        person_match_threshold=args.person_match_threshold,
+        person_cross_wrist_ratio=args.person_cross_wrist_ratio,
+        camera_calibration_path=args.camera_calibration,
+        fused_depth_scale=args.fused_depth_scale,
+        yolo_tracker=args.yolo_tracker,
+        yolo_device=args.yolo_device,
+        identity_hints=dict(args.identity_hints or []),
+    )
+
+
 def export_motion_bundle(
     config: PipelineConfig,
     fps: float,
@@ -610,136 +691,24 @@ def export_motion_bundle(
 
 
 def build_config_for_assignment(args: argparse.Namespace, assignment: InputAssignment, multi_input: bool) -> PipelineConfig:
-    config = PipelineConfig(
+    return _build_pipeline_config(
+        args,
         video_path=assignment.source,
         output_path=resolve_output_path(args.output, assignment.label, multi_input),
-        output_directory=args.output_dir,
         output_basename=resolve_output_basename(args.output_basename, assignment.source, assignment.label, multi_input),
-        body_model_path=args.model,
-        hand_model_path=args.hand_model,
-        body_model_variant=args.model or DEFAULT_BODY_MODEL,
-        hand_model_variant=args.hand_model_variant,
-        body_input_name=args.body_input_name,
-        body_input_dtype="int32",
-        hand_input_name=args.hand_input_name,
-        hand_input_dtype="float32",
-        body_input_size=args.body_input_size,
-        hand_input_size=args.hand_input_size,
-        body_conf_threshold=args.body_conf_threshold,
-        body_iou_threshold=args.body_iou_threshold,
-        hand_det_threshold=args.hand_det_threshold,
-        hand_kp_threshold=args.hand_kp_threshold,
-        hand_box_min_size=args.hand_box_min_size,
-        hand_box_scale=args.hand_box_scale,
-        enable_preview=not args.no_preview,
-        provider_names=tuple(args.providers) if args.providers else ("CUDAExecutionProvider",),
         preview_window_title=f"{args.preview_title} - {assignment.label}" if multi_input else args.preview_title,
-        osc_host=args.osc_host,
-        osc_port=args.osc_port,
-        osc_enabled=args.osc_enabled,
-        fallback_fps=args.fallback_fps,
-        output_fourcc=args.output_fourcc,
-        body_line_color=args.body_line_color,
-        body_point_color=args.body_point_color,
-        hand_box_color=args.hand_box_color,
-        hand_line_color=args.hand_line_color,
-        hand_point_color=args.hand_point_color,
-        body_line_thickness=args.body_line_thickness,
-        body_point_radius=args.body_point_radius,
-        hand_box_thickness=args.hand_box_thickness,
-        hand_line_thickness=args.hand_line_thickness,
-        hand_point_radius=args.hand_point_radius,
-        body_smoothing_alpha=args.body_smoothing_alpha,
-        hand_smoothing_alpha=args.hand_smoothing_alpha,
-        body_hold_frames=args.body_hold_frames,
-        hand_hold_frames=args.hand_hold_frames,
-        hold_confidence_decay=args.hold_confidence_decay,
-        max_people=args.max_people,
-        person_detector_scale=args.person_detector_scale,
-        person_box_scale=args.person_box_scale,
-        person_track_hold_frames=args.person_track_hold_frames,
-        person_match_threshold=args.person_match_threshold,
-        person_cross_wrist_ratio=args.person_cross_wrist_ratio,
-        camera_calibration_path=args.camera_calibration,
-        fused_depth_scale=args.fused_depth_scale,
-        yolo_tracker=args.yolo_tracker,
-        yolo_device=args.yolo_device,
-        identity_hints=dict(args.identity_hints or []),
     )
-    return config
 
 
 def build_fused_config(args: argparse.Namespace, assignments: list[InputAssignment]) -> PipelineConfig:
     reference_assignment = next((assignment for assignment in assignments if assignment.label == "FRONT"), assignments[0])
-    return PipelineConfig(
+    return _build_pipeline_config(
+        args,
         video_path=reference_assignment.source,
         output_path=resolve_fused_output_path(args.output),
-        output_directory=args.output_dir,
         output_basename=resolve_fused_output_basename(args.output_basename, assignments),
-        body_model_path=args.model,
-        hand_model_path=args.hand_model,
-        body_model_variant=args.model or DEFAULT_BODY_MODEL,
-        hand_model_variant=args.hand_model_variant,
-        body_input_name=args.body_input_name,
-        body_input_dtype="int32",
-        hand_input_name=args.hand_input_name,
-        hand_input_dtype="float32",
-        body_input_size=args.body_input_size,
-        hand_input_size=args.hand_input_size,
-        body_conf_threshold=args.body_conf_threshold,
-        body_iou_threshold=args.body_iou_threshold,
-        hand_det_threshold=args.hand_det_threshold,
-        hand_kp_threshold=args.hand_kp_threshold,
-        hand_box_min_size=args.hand_box_min_size,
-        hand_box_scale=args.hand_box_scale,
-        enable_preview=not args.no_preview,
-        provider_names=tuple(args.providers) if args.providers else ("CUDAExecutionProvider",),
         preview_window_title=f"{args.preview_title} - FUSED",
-        osc_host=args.osc_host,
-        osc_port=args.osc_port,
-        osc_enabled=args.osc_enabled,
-        fallback_fps=args.fallback_fps,
-        output_fourcc=args.output_fourcc,
-        body_line_color=args.body_line_color,
-        body_point_color=args.body_point_color,
-        hand_box_color=args.hand_box_color,
-        hand_line_color=args.hand_line_color,
-        hand_point_color=args.hand_point_color,
-        body_line_thickness=args.body_line_thickness,
-        body_point_radius=args.body_point_radius,
-        hand_box_thickness=args.hand_box_thickness,
-        hand_line_thickness=args.hand_line_thickness,
-        hand_point_radius=args.hand_point_radius,
-        body_smoothing_alpha=args.body_smoothing_alpha,
-        hand_smoothing_alpha=args.hand_smoothing_alpha,
-        body_hold_frames=args.body_hold_frames,
-        hand_hold_frames=args.hand_hold_frames,
-        hold_confidence_decay=args.hold_confidence_decay,
-        max_people=args.max_people,
-        person_detector_scale=args.person_detector_scale,
-        person_box_scale=args.person_box_scale,
-        person_track_hold_frames=args.person_track_hold_frames,
-        person_match_threshold=args.person_match_threshold,
-        person_cross_wrist_ratio=args.person_cross_wrist_ratio,
-        camera_calibration_path=args.camera_calibration,
-        fused_depth_scale=args.fused_depth_scale,
-        yolo_tracker=args.yolo_tracker,
-        yolo_device=args.yolo_device,
-        identity_hints=dict(args.identity_hints or []),
     )
-
-
-def _color_similarity(profile_a: dict[str, float], profile_b: dict[str, float]) -> float:
-    if not profile_a or not profile_b:
-        return 0.0
-    overlap = 0.0
-    magnitude = 0.0
-    for key in COLOR_NAMES:
-        overlap += min(profile_a.get(key, 0.0), profile_b.get(key, 0.0))
-        magnitude += max(profile_a.get(key, 0.0), profile_b.get(key, 0.0))
-    if magnitude <= 0.0:
-        return 0.0
-    return overlap / magnitude
 
 
 def _track_sort_key(track: PersonTrack) -> tuple[int, float]:
@@ -792,7 +761,7 @@ def _align_people_across_cameras(
                         continue
                     scored_pairs.append(
                         (
-                            _color_similarity(reference_track.color_signature, track.color_signature),
+                            color_profile_similarity(reference_track.color_signature, track.color_signature),
                             track_index,
                             key_index,
                         )
@@ -871,13 +840,52 @@ def _box_from_body_points(points: list[tuple[int, int, float]], threshold: float
     return min(xs), min(ys), max(xs), max(ys)
 
 
+def _fuse_smoothed_hands(
+    renderer: PoseHandPipeline,
+    camera_hands: dict[str, dict[str, dict]],
+    config: PipelineConfig,
+    reference_label: str,
+) -> dict[str, dict]:
+    fused_hands: dict[str, dict] = {}
+    for side in ("left", "right"):
+        side_views = {
+            label: hands_by_side[side]
+            for label, hands_by_side in camera_hands.items()
+            if side in hands_by_side
+        }
+        fused_hand = fuse_hand_views(side_views, config.hand_kp_threshold, reference_label=reference_label)
+        if fused_hand is None:
+            continue
+        smoothed_points = renderer.smoother.smooth_hand(side, fused_hand["points"])
+        if smoothed_points is None:
+            continue
+        fused_hands[side] = {"box": fused_hand["box"], "points": smoothed_points}
+    return fused_hands
+
+
+def _build_fused_metadata(
+    mode: str,
+    assignments: list[InputAssignment],
+    config: PipelineConfig,
+) -> dict[str, object]:
+    return {
+        "mode": mode,
+        "camera_labels": [assignment.label for assignment in assignments],
+        "sources": {assignment.label: str(assignment.source) for assignment in assignments},
+        "body_model_variant": config.body_model_variant,
+        "hand_model_variant": config.hand_model_variant,
+        "camera_calibration_path": None if config.camera_calibration_path is None else str(config.camera_calibration_path),
+    }
+
+
+def _print_saved_paths(*paths: Path | None) -> None:
+    for path in paths:
+        if path is not None:
+            print(f"Saved: {path}")
+
+
 def run_multi_person_assignment(config: PipelineConfig) -> None:
-    try:
-        prepare_model_assets(config)
-    except Exception as exc:
-        print(f"Error: failed to prepare model assets: {exc}")
-        return
-    if not validate_config(config):
+    if not _prepare_runtime_config(config):
         return
 
     assert config.output_path is not None
@@ -950,22 +958,14 @@ def run_multi_person_assignment(config: PipelineConfig) -> None:
         },
     )
     exported_fbx_paths = export_multi_person_fbx_bundle(config.fbx_output_path, session.fps, motion_frames)
-    print(f"Saved: {config.output_path}")
-    print(f"Saved: {config.json_output_path}")
-    for exported_path in exported_fbx_paths:
-        print(f"Saved: {exported_path}")
+    _print_saved_paths(config.output_path, config.json_output_path, *exported_fbx_paths)
 
 
 def run_assignment(config: PipelineConfig) -> None:
     if config.max_people > 1:
         run_multi_person_assignment(config)
         return
-    try:
-        prepare_model_assets(config)
-    except Exception as exc:
-        print(f"Error: failed to prepare model assets: {exc}")
-        return
-    if not validate_config(config):
+    if not _prepare_runtime_config(config):
         return
 
     # ------------------------------------------------------------------ #
@@ -1037,9 +1037,7 @@ def run_assignment(config: PipelineConfig) -> None:
             "hand_model_variant": config.hand_model_variant,
         },
     )
-    print(f"Saved: {config.output_path}")
-    print(f"Saved: {config.json_output_path}")
-    print(f"Saved: {config.fbx_output_path}")
+    _print_saved_paths(config.output_path, config.json_output_path, config.fbx_output_path)
 
 
 def run_fused_assignments(
@@ -1047,12 +1045,7 @@ def run_fused_assignments(
     args: argparse.Namespace,
 ) -> None:
     config = build_fused_config(args, assignments)
-    try:
-        prepare_model_assets(config)
-    except Exception as exc:
-        print(f"Error: failed to prepare model assets: {exc}")
-        return
-    if not validate_config(config):
+    if not _prepare_runtime_config(config):
         return
 
     try:
@@ -1139,20 +1132,7 @@ def run_fused_assignments(
                     if fused_body is None:
                         continue
 
-                    fused_hands: dict[str, dict] = {}
-                    for side in ("left", "right"):
-                        side_views = {
-                            label: hands_by_side[side]
-                            for label, hands_by_side in camera_hands.items()
-                            if side in hands_by_side
-                        }
-                        fused_hand = fuse_hand_views(side_views, config.hand_kp_threshold, reference_label=reference_label)
-                        if fused_hand is None:
-                            continue
-                        smoothed_points = renderer.smoother.smooth_hand(side, fused_hand["points"])
-                        if smoothed_points is None:
-                            continue
-                        fused_hands[side] = {"box": fused_hand["box"], "points": smoothed_points}
+                    fused_hands = _fuse_smoothed_hands(renderer, camera_hands, config, reference_label)
 
                     renderer.render_pose(canvas, fused_body, fused_hands, send_osc=False)
                     label = next((track.label for track in views.values() if track.label), person_key)
@@ -1208,20 +1188,7 @@ def run_fused_assignments(
                 if fused_body is None:
                     fused_body = [(0, 0, 0.0) for _ in range(17)]
 
-                fused_hands: dict[str, dict] = {}
-                for side in ("left", "right"):
-                    side_views = {
-                        label: hands_by_side[side]
-                        for label, hands_by_side in camera_hands.items()
-                        if side in hands_by_side
-                    }
-                    fused_hand = fuse_hand_views(side_views, config.hand_kp_threshold, reference_label=reference_label)
-                    if fused_hand is None:
-                        continue
-                    smoothed_points = renderer.smoother.smooth_hand(side, fused_hand["points"])
-                    if smoothed_points is None:
-                        continue
-                    fused_hands[side] = {"box": fused_hand["box"], "points": smoothed_points}
+                fused_hands = _fuse_smoothed_hands(renderer, camera_hands, config, reference_label)
 
                 joint_depths = estimate_joint_depths(
                     camera_bodies=camera_bodies,
@@ -1270,38 +1237,19 @@ def run_fused_assignments(
             config.json_output_path,
             fps=export_fps,
             frames=motion_frames,
-            metadata={
-                "mode": "fused_multi_person",
-                "camera_labels": [assignment.label for assignment in assignments],
-                "sources": {assignment.label: str(assignment.source) for assignment in assignments},
-                "body_model_variant": config.body_model_variant,
-                "hand_model_variant": config.hand_model_variant,
-                "camera_calibration_path": None if config.camera_calibration_path is None else str(config.camera_calibration_path),
-            },
+            metadata=_build_fused_metadata("fused_multi_person", assignments, config),
         )
         exported_fbx_paths = export_multi_person_fbx_bundle(config.fbx_output_path, export_fps, motion_frames)
-        print(f"Saved: {config.output_path}")
-        print(f"Saved: {config.json_output_path}")
-        for exported_path in exported_fbx_paths:
-            print(f"Saved: {exported_path}")
+        _print_saved_paths(config.output_path, config.json_output_path, *exported_fbx_paths)
         return
 
     export_motion_bundle(
         config,
         fps=export_fps,
         frames=motion_frames,
-        metadata={
-            "mode": "fused",
-            "camera_labels": [assignment.label for assignment in assignments],
-            "sources": {assignment.label: str(assignment.source) for assignment in assignments},
-            "body_model_variant": config.body_model_variant,
-            "hand_model_variant": config.hand_model_variant,
-            "camera_calibration_path": None if config.camera_calibration_path is None else str(config.camera_calibration_path),
-        },
+        metadata=_build_fused_metadata("fused", assignments, config),
     )
-    print(f"Saved: {config.output_path}")
-    print(f"Saved: {config.json_output_path}")
-    print(f"Saved: {config.fbx_output_path}")
+    _print_saved_paths(config.output_path, config.json_output_path, config.fbx_output_path)
 
 
 def main() -> None:

@@ -169,7 +169,7 @@ def _blend_color_scores(previous: ColorProfile, current: ColorProfile, alpha: fl
     return blended
 
 
-def _color_profile_similarity(profile_a: ColorProfile, profile_b: ColorProfile) -> float:
+def color_profile_similarity(profile_a: ColorProfile, profile_b: ColorProfile) -> float:
     if not profile_a or not profile_b:
         return 0.0
     overlap = 0.0
@@ -326,7 +326,7 @@ class MultiPersonTracker:
             _iou(predicted_box, detection.box) * 0.40
             + _center_distance_score(predicted_box, detection.box) * 0.20
             + _size_similarity_score(predicted_box, detection.box) * 0.10
-            + _color_profile_similarity(track.color_signature, detection.color_scores) * 0.30
+            + color_profile_similarity(track.color_signature, detection.color_scores) * 0.30
         )
         if track.label:
             score += self._identity_score(track.label, detection.color_scores) * 0.5
@@ -407,7 +407,7 @@ class MultiPersonTracker:
             label: self._identity_score(label, detection.color_scores)
             for label in self.config.identity_hints
         }
-        best_label = max(candidate_scores, key=candidate_scores.get, default=None)
+        best_label = max(candidate_scores, key=lambda label: candidate_scores[label], default=None)
         if best_label is None:
             return
         best_score = candidate_scores[best_label]

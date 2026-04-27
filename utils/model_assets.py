@@ -55,43 +55,7 @@ HAND_MODEL_SPECS: dict[str, ModelSpec] = {
 }
 
 
-def ensure_model_file(project_root: Path, spec: ModelSpec) -> Path:
-    destination = project_root / spec.relative_path
-    if destination.exists():
-        return destination
-
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = destination.with_suffix(destination.suffix + ".part")
-
-    try:
-        with urlopen(spec.source_url) as response, temp_path.open("wb") as output_file:
-            while True:
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                output_file.write(chunk)
-        temp_path.replace(destination)
-    except Exception:
-        if temp_path.exists():
-            temp_path.unlink()
-        raise
-
-    return destination
-
-
-def ensure_body_model_file(project_root: Path, model_name_or_path: str) -> Path:
-    candidate_path = Path(model_name_or_path)
-    if candidate_path.is_absolute() or candidate_path.parent != Path("."):
-        return candidate_path
-
-    destination = project_root / "models" / "body" / candidate_path.name
-    if destination.exists():
-        return destination
-
-    source_url = BODY_MODEL_URLS.get(candidate_path.name)
-    if source_url is None:
-        return destination
-
+def _download_to_path(source_url: str, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     temp_path = destination.with_suffix(destination.suffix + ".part")
 
@@ -108,4 +72,28 @@ def ensure_body_model_file(project_root: Path, model_name_or_path: str) -> Path:
             temp_path.unlink()
         raise
 
+
+def ensure_model_file(project_root: Path, spec: ModelSpec) -> Path:
+    destination = project_root / spec.relative_path
+    if destination.exists():
+        return destination
+
+    _download_to_path(spec.source_url, destination)
+    return destination
+
+
+def ensure_body_model_file(project_root: Path, model_name_or_path: str) -> Path:
+    candidate_path = Path(model_name_or_path)
+    if candidate_path.is_absolute() or candidate_path.parent != Path("."):
+        return candidate_path
+
+    destination = project_root / "models" / "body" / candidate_path.name
+    if destination.exists():
+        return destination
+
+    source_url = BODY_MODEL_URLS.get(candidate_path.name)
+    if source_url is None:
+        return destination
+
+    _download_to_path(source_url, destination)
     return destination
