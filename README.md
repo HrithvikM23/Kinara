@@ -241,9 +241,20 @@ Current packet content includes:
 - hand landmarks
 - hand boxes
 - joint maps
+- derived head / neck / foot / toe joints
 ```
 
-See [args.md](https://github.com/HrithvikM23/Kinara/blob/kinara/cortex/args.md) for host/port flags.
+Live UDP is disabled unless you pass `--osc-enabled`.
+
+The default live UDP target values are centralized in [config.py](https://github.com/HrithvikM23/Kinara/blob/main/config.py):
+
+```txt
+HOST = 127.0.0.1
+PORT = 9000
+ENABLED = false
+```
+
+See [args.md](https://github.com/HrithvikM23/Kinara/blob/main/args.md) for host/port flags.
 
 ---
 
@@ -319,7 +330,7 @@ Multi-camera fused tracking from the CLI:
 py main.py --source FRONT=".\front.mp4" --source LEFT=".\left.mp4" --max-people 2 --camera-calibration ".\calibration.json"
 ```
 
-All CLI arguments are documented in [args.md](https://github.com/HrithvikM23/Kinara/blob/kinara/cortex/args.md).
+All CLI arguments are documented in [args.md](https://github.com/HrithvikM23/Kinara/blob/main/args.md).
 
 ---
 
@@ -403,4 +414,4 @@ Add an Android client flow where up to four phones can stream camera video over 
 
 # License
 
-See [LICENSE.md](https://github.com/HrithvikM23/Kinara/blob/kinara/cortex/LICENSE.md).
+See [LICENSE.md](https://github.com/HrithvikM23/Kinara/blob/main/LICENSE.md).

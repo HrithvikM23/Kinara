@@ -166,18 +166,20 @@ Default: automatic
 `--osc-host`  
 Function: Sets the live UDP target host.  
 Accepted values: hostname or IP address.  
-Default: `127.0.0.1`
+Default: `127.0.0.1` from `config.LiveUdpDefaults.HOST`
 
 `--osc-port`  
 Function: Sets the live UDP target port.  
 Accepted range: integer from `1` to `65535`.  
-Default: `9000`
+Default: `9000` from `config.LiveUdpDefaults.PORT`
 
 `--osc-enabled`  
 Function: Enables live UDP sending.  
 Accepted values: flag only.  
 Default: disabled
-Notes: Live UDP now sends the `kinara-live-v2` schema with frame metadata, fused camera view labels, and joint maps when available.
+Notes: Live UDP sends nothing unless this flag is present.
+Notes: Live UDP now sends the `kinara-live-v2` schema with frame metadata, fused camera view labels, body landmarks, hand landmarks, hand boxes, and joint maps when available.
+Notes: Derived joints currently include `Neck`, `Head`, `LeftFoot`, `LeftToeBase`, `RightFoot`, and `RightToeBase`.
 
 ## Preview and Video Writer
 
