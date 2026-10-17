@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 
-Point = tuple[int, int, float]
+from utils.skeleton import Point
 
 
 class LandmarkSmoother:

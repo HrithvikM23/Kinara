@@ -544,6 +544,18 @@ Function: Maximum distance from the detected floor for export foot locking.
 Accepted range: float `>= 0`.  
 Default: `16.0`
 
+`--no-normalize-skeleton-scale`  
+Function: Disables distance-invariant skeleton scale normalization during offline export.  
+Accepted values: flag only.  
+Default: scale normalization enabled.  
+Notes: By default, Kinara normalizes exported skeletons so that character proportions match a standard humanoid scale (torso length 50.0 cm) regardless of how close or far the person is from the camera. Pass this flag if you require raw, unscaled image-space coordinate exports.
+
+`--target-torso-length`  
+Function: Target torso length (distance between `HipsRoot` and `Neck`) in units for distance-invariant skeleton scale normalization.  
+Accepted range: float `> 0`.  
+Default: `50.0` (standard humanoid torso length in cm, giving ~175 cm total character height in Unreal/Blender units).  
+Notes: Only used when skeleton scale normalization is enabled.
+
 ## Preview Toggle
 
 `--no-preview`  

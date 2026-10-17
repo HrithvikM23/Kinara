@@ -113,6 +113,11 @@ try {
         $PyInstallerArgs += @('--icon', "$IconPath")
     }
 
+    $UiRoot = Join-Path $ProjectRoot 'app\ui'
+    if (Test-Path -LiteralPath $UiRoot) {
+        $PyInstallerArgs += @('--add-data', "$UiRoot;app/ui")
+    }
+
     $PyInstallerArgs += (Join-Path $ProjectRoot 'app\kinara_launcher.py')
 
     & $Python -m PyInstaller @PyInstallerArgs

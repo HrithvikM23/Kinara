@@ -14,10 +14,15 @@ from utils.hand_fallback import (
     pop_hand_rejection_telemetry,
 )
 from utils.hand_tracking import blend_with_prediction, hand_detection_score, hand_motion_delta, predict_hand_payload
+from utils.logging import log_info
 from utils.normalize import build_hand_box, expand_box
 from utils.payloads import HandPayload
 from utils.prediction import predict_points
 from utils.skeleton import HAND_NAME_TO_INDEX
+
+_RETRY_SCALE_FACTORS = (1.3, 1.7, 2.2)
+_RETRY_FORWARD_SHIFTS = (0.15, 0.35, 0.05)
+WRIST_INDEX_TO_SIDE = {9: "left", 10: "right"}
 
 
 class PoseHandPipeline:
@@ -97,14 +102,14 @@ class PoseHandPipeline:
             return
         self._processing_size_logged = True
         if inference_width == frame_width and inference_height == frame_height:
-            print(
+            log_info(
                 f"[processing] source {frame_width}x{frame_height}; "
                 f"--processing-width {target_width} does not downscale this source"
             )
             return
         scale_x = frame_width / float(inference_width)
         scale_y = frame_height / float(inference_height)
-        print(
+        log_info(
             f"[processing] source {frame_width}x{frame_height} -> inference {inference_width}x{inference_height} "
             f"(scale {scale_x:.2f}x, {scale_y:.2f}x)"
         )
@@ -148,7 +153,7 @@ class PoseHandPipeline:
             if wrist_point[2] <= self.config.body_conf_threshold or elbow_point[2] <= self.config.body_conf_threshold:
                 continue
 
-            side = "left" if wrist_idx == 9 else "right"
+            side = WRIST_INDEX_TO_SIDE.get(wrist_idx, "right")
             box = build_hand_box(
                 wrist_point,
                 elbow_point,
@@ -301,8 +306,8 @@ class PoseHandPipeline:
         boxes.append(primary_box)
         retry_count = max(0, self.config.hand_crop_retries)
         for retry_index in range(retry_count):
-            scale_multiplier = (1.3, 1.7, 2.2)[retry_index % 3] + (retry_index // 3) * 0.5
-            forward_shift = (0.15, 0.35, 0.05)[retry_index % 3]
+            scale_multiplier = _RETRY_SCALE_FACTORS[retry_index % len(_RETRY_SCALE_FACTORS)] + (retry_index // len(_RETRY_SCALE_FACTORS)) * 0.5
+            forward_shift = _RETRY_FORWARD_SHIFTS[retry_index % len(_RETRY_FORWARD_SHIFTS)]
             boxes.append(
                 build_hand_box(
                     wrist_point,

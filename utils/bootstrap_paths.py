@@ -6,7 +6,7 @@ import site
 import sys
 from pathlib import Path
 
-from utils.bootstrap_state import PROJECT_ROOT, REQUIRED_PROJECT_FILES, RUNTIME_CACHE_DIR, ULTRALYTICS_CONFIG_DIR, VENDOR_DIR
+from utils.bootstrap_state import PROJECT_ROOT, RUNTIME_CACHE_DIR, ULTRALYTICS_CONFIG_DIR, VENDOR_DIR
 
 try:
     import winreg
@@ -18,15 +18,7 @@ WINDOWS_DLL_DIRECTORIES: list[object] = []
 
 
 def dedupe_paths(paths: list[Path]) -> list[Path]:
-    unique_paths: list[Path] = []
-    seen: set[str] = set()
-    for path in paths:
-        normalized = os.path.normcase(os.path.normpath(str(path)))
-        if normalized in seen:
-            continue
-        seen.add(normalized)
-        unique_paths.append(path)
-    return unique_paths
+    return list({os.path.normcase(os.path.normpath(str(p))): p for p in paths}.values())
 
 
 def path_is_dir(path: Path) -> bool:
@@ -161,12 +153,8 @@ def persist_user_path(path_updates: list[Path]) -> list[str]:
 
 
 def find_missing_project_files() -> list[Path]:
-    missing_paths: list[Path] = []
-    for relative_path in REQUIRED_PROJECT_FILES:
-        candidate = PROJECT_ROOT / relative_path
-        if not candidate.exists():
-            missing_paths.append(relative_path)
-    return missing_paths
+    sentinel = Path("pyproject.toml")
+    return [] if (PROJECT_ROOT / sentinel).exists() else [sentinel]
 
 
 def ensure_local_environment() -> None:

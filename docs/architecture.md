@@ -591,8 +591,10 @@ Inference and rendering begin in OpenCV image space:
 `utils.exports` converts the landmarks into a normalized motion space:
 
 - X remains horizontal
-- image-space vertical motion is inverted and later becomes Z-up motion
-- fused pseudo-depth becomes the forward axis
+- image-space vertical motion is inverted and becomes Z-up motion
+- fused pseudo-depth or calibrated Z becomes the forward axis
+- **Distance-invariant scale normalization**: Joints are scaled relative to `HipsRoot` by $\text{target\_torso\_length} / \text{measured\_torso\_length}$ using zero-lag bidirectional temporal smoothing ($\alpha=0.20$), ensuring characters maintain a consistent standard humanoid scale (~175 cm character height) across all frames and videos regardless of camera distance
+- **Grounding**: The lowest joint (foot contact) across the sequence is grounded onto $Z=0$
 - the final declared metadata says:
   - right axis = `X`
   - forward axis = `Y`
@@ -600,7 +602,7 @@ Inference and rendering begin in OpenCV image space:
 
 ### Blender import assumption
 
-The Blender importer assumes Kinara JSON is already in the declared normalized Z-up space. It does not reinterpret the data as raw pixel coordinates.
+The Blender importer assumes Kinara JSON is already in the declared normalized Z-up space at standard humanoid scale. It does not reinterpret the data as raw pixel coordinates.
 
 ## Failure Handling And Recovery Strategy
 

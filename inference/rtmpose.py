@@ -49,6 +49,68 @@ class BodyDetection(TypedDict):
     body_points: list[tuple[int, int, float]]
 
 
+def _box_from_keypoints(
+    points: list[tuple[int, int, float]],
+    threshold: float,
+    frame_w: int = 0,
+    frame_h: int = 0,
+) -> tuple[int, int, int, int]:
+    confident_points = [
+        (x, y)
+        for x, y, confidence in points
+        if confidence > threshold
+    ]
+    if confident_points:
+        x_values = [point[0] for point in confident_points]
+        y_values = [point[1] for point in confident_points]
+        max_x = min(frame_w, max(x_values)) if frame_w > 0 else max(x_values)
+        max_y = min(frame_h, max(y_values)) if frame_h > 0 else max(y_values)
+        return (
+            max(0, min(x_values)),
+            max(0, min(y_values)),
+            max_x,
+            max_y,
+        )
+    return (0, 0, frame_w, frame_h)
+
+
+def _distance2(first: Any, second: Any, width: int, height: int) -> float:
+    return math.hypot(
+        (float(first.x) - float(second.x)) * float(width),
+        (float(first.y) - float(second.y)) * float(height),
+    )
+
+
+def _distance3(first: Any, second: Any) -> float:
+    dx = float(first.x) - float(second.x)
+    dy = float(first.y) - float(second.y)
+    dz = float(first.z) - float(second.z)
+    return math.sqrt((dx * dx) + (dy * dy) + (dz * dz))
+
+
+def _estimate_world_to_pixel_scale(
+    image_landmarks: Any,
+    world_landmarks: Any,
+    index_pairs: tuple[tuple[int, int], ...] | list[tuple[int, int]],
+    width: int,
+    height: int,
+) -> tuple[float, float] | None:
+    scale_candidates = []
+    pixel_candidates = []
+    for first_index, second_index in index_pairs:
+        pixel_distance = _distance2(image_landmarks[first_index], image_landmarks[second_index], width, height)
+        world_distance = _distance3(world_landmarks[first_index], world_landmarks[second_index])
+        if pixel_distance > 1e-6 and world_distance > 1e-6:
+            scale_candidates.append(pixel_distance / world_distance)
+            pixel_candidates.append(pixel_distance)
+    if not scale_candidates:
+        return None
+
+    world_to_pixel_scale = float(np.median(np.asarray(scale_candidates, dtype=np.float64)))
+    pixel_reference = float(np.median(np.asarray(pixel_candidates, dtype=np.float64)))
+    return world_to_pixel_scale, pixel_reference
+
+
 def _normalize_provider_name(value: str) -> str:
     # Some Windows shells can inject control characters into argv values.
     return "".join(character for character in value.strip() if character.isprintable())
@@ -103,7 +165,7 @@ class ONNXPoseHandRunner:
         self.config = config
         self.body_model = None
         self.rtmpose_model = None
-        self._wholebody_hands_by_body: dict[tuple[tuple[int, int, float], ...], dict[str, HandPayload]] = {}
+        self._wholebody_hands_by_body: dict[tuple[tuple[int, int], ...], dict[str, HandPayload]] = {}
         self.hand_session = None
         self.last_body_depths: dict[str, float] = {}
         self.last_hand_depths: list[float] | None = None
@@ -336,19 +398,10 @@ class ONNXPoseHandRunner:
         )
         return body_points
 
-    @staticmethod
-    def _distance2(first: Any, second: Any, width: int, height: int) -> float:
-        return math.hypot(
-            (float(first.x) - float(second.x)) * float(width),
-            (float(first.y) - float(second.y)) * float(height),
-        )
-
-    @staticmethod
-    def _distance3(first: Any, second: Any) -> float:
-        dx = float(first.x) - float(second.x)
-        dy = float(first.y) - float(second.y)
-        dz = float(first.z) - float(second.z)
-        return math.sqrt((dx * dx) + (dy * dy) + (dz * dz))
+    _distance2 = staticmethod(_distance2)
+    _distance3 = staticmethod(_distance3)
+    _estimate_world_to_pixel_scale = staticmethod(_estimate_world_to_pixel_scale)
+    _box_from_keypoints = staticmethod(_box_from_keypoints)
 
     def _mediapipe_body_depths(
         self,
@@ -378,19 +431,18 @@ class ONNXPoseHandRunner:
             "LeftToeBase": 31,
             "RightToeBase": 32,
         }
-        scale_candidates = []
-        pixel_candidates = []
-        for first_index, second_index in ((11, 12), (23, 24), (11, 23), (12, 24)):
-            pixel_distance = self._distance2(image_landmarks[first_index], image_landmarks[second_index], frame_width, frame_height)
-            world_distance = self._distance3(world_landmarks[first_index], world_landmarks[second_index])
-            if pixel_distance > 1e-6 and world_distance > 1e-6:
-                scale_candidates.append(pixel_distance / world_distance)
-                pixel_candidates.append(pixel_distance)
-        if not scale_candidates:
+        scale_result = _estimate_world_to_pixel_scale(
+            image_landmarks,
+            world_landmarks,
+            ((11, 12), (23, 24), (11, 23), (12, 24)),
+            frame_width,
+            frame_height,
+        )
+        if scale_result is None:
             return {}
 
-        world_to_pixel_scale = float(np.median(np.asarray(scale_candidates, dtype=np.float64)))
-        pixel_reference = max(float(np.median(np.asarray(pixel_candidates, dtype=np.float64))), 48.0)
+        world_to_pixel_scale, pixel_median = scale_result
+        pixel_reference = max(pixel_median, 48.0)
         max_depth = max(pixel_reference * 0.9, 64.0)
         root_z = (float(world_landmarks[23].z) + float(world_landmarks[24].z)) * 0.5
 
@@ -420,49 +472,15 @@ class ONNXPoseHandRunner:
         return np.asarray(tensor_like, dtype=dtype)
 
     def detect_bodies(self, frame_bgr, max_people: int, track: bool):
-        orig_h, orig_w = frame_bgr.shape[:2]
-        proc_width = self.config.processing_width
-        if proc_width <= 0:
-            if self.config.profile == "fastest":
-                proc_width = 640
-            elif self.config.profile == "mid":
-                proc_width = 960
-
-        if proc_width > 0 and orig_w > proc_width:
-            scale = proc_width / float(orig_w)
-            proc_height = max(1, int(round(orig_h * scale)))
-            infer_frame = cv2.resize(frame_bgr, (proc_width, proc_height), interpolation=cv2.INTER_LINEAR)
-            scale_x = orig_w / float(proc_width)
-            scale_y = orig_h / float(proc_height)
-        else:
-            infer_frame = frame_bgr
-            scale_x = 1.0
-            scale_y = 1.0
-
         if self.config.body_backend in {"rtmpose", "rtmpose-wholebody"}:
-            return self._detect_bodies_rtmpose(infer_frame, max_people, scale_x=scale_x, scale_y=scale_y)
+            return self._detect_bodies_rtmpose(frame_bgr, max_people)
 
         if self.config.body_backend == "mediapipe":
             body_points = self._detect_body_mediapipe(frame_bgr)
             if not body_points:
                 return []
             frame_height, frame_width = frame_bgr.shape[:2]
-            confident_points = [
-                (x, y)
-                for x, y, confidence in body_points
-                if confidence > self.config.body_conf_threshold
-            ]
-            if confident_points:
-                x_values = [point[0] for point in confident_points]
-                y_values = [point[1] for point in confident_points]
-                box = (
-                    max(0, min(x_values)),
-                    max(0, min(y_values)),
-                    min(frame_width, max(x_values)),
-                    min(frame_height, max(y_values)),
-                )
-            else:
-                box = (0, 0, frame_width, frame_height)
+            box = _box_from_keypoints(body_points, self.config.body_conf_threshold, frame_width, frame_height)
             return [
                 {
                     "id": 1,
@@ -483,7 +501,7 @@ class ONNXPoseHandRunner:
             if track:
                 assert self.body_model is not None
                 results = self.body_model.track(
-                    infer_frame,
+                    frame_bgr,
                     **self._yolo_common_args(max_people),
                     persist=True,
                     tracker=self.config.yolo_tracker,
@@ -491,7 +509,7 @@ class ONNXPoseHandRunner:
             else:
                 assert self.body_model is not None
                 results = self.body_model.predict(
-                    infer_frame,
+                    frame_bgr,
                     **self._yolo_common_args(max_people),
                 )
 
@@ -515,8 +533,8 @@ class ONNXPoseHandRunner:
             detection_score = float(boxes_conf[index])
             body_points: list[tuple[int, int, float]] = []
             for point in keypoints:
-                point_x = float(point[0]) * scale_x
-                point_y = float(point[1]) * scale_y
+                point_x = float(point[0])
+                point_y = float(point[1])
                 point_conf = float(point[2])
                 body_points.append((int(round(point_x)), int(round(point_y)), point_conf))
             detections.append(
@@ -524,10 +542,10 @@ class ONNXPoseHandRunner:
                     "id": detection_id,
                     "score": detection_score,
                     "box": (
-                        int(round(float(box[0]) * scale_x)),
-                        int(round(float(box[1]) * scale_y)),
-                        int(round(float(box[2]) * scale_x)),
-                        int(round(float(box[3]) * scale_y)),
+                        int(round(float(box[0]))),
+                        int(round(float(box[1]))),
+                        int(round(float(box[2]))),
+                        int(round(float(box[3]))),
                     ),
                     "body_points": body_points,
                 }
@@ -572,25 +590,15 @@ class ONNXPoseHandRunner:
                     for side, hand_pts in hands_by_side.items():
                         scaled_pts = [(int(round(x * scale_x)), int(round(y * scale_y)), c) for x, y, c in hand_pts]
                         scaled_hands[side] = scaled_pts
-                    self._wholebody_hands_by_body[tuple(body_points)] = scaled_hands
+                    self._wholebody_hands_by_body[tuple((x, y) for x, y, _ in body_points)] = scaled_hands
 
             frame_h, frame_w = frame_bgr.shape[:2]
-            confident_points = [
-                (x, y)
-                for x, y, confidence in body_points
-                if confidence > self.config.body_conf_threshold
-            ]
-            if confident_points:
-                x_values = [point[0] for point in confident_points]
-                y_values = [point[1] for point in confident_points]
-                box = (
-                    max(0, min(x_values)),
-                    max(0, min(y_values)),
-                    min(int(round(frame_w * scale_x)), max(x_values)),
-                    min(int(round(frame_h * scale_y)), max(y_values)),
-                )
-            else:
-                box = (0, 0, int(round(frame_w * scale_x)), int(round(frame_h * scale_y)))
+            box = _box_from_keypoints(
+                body_points,
+                self.config.body_conf_threshold,
+                int(round(frame_w * scale_x)),
+                int(round(frame_h * scale_y)),
+            )
             detections.append(
                 {
                     "id": None,
@@ -615,18 +623,13 @@ class ONNXPoseHandRunner:
             points: list[tuple[int, int, float]] = []
             for point, score in zip(keypoints[start_index:end_index], scores[start_index:end_index], strict=True):
                 points.append((int(round(float(point[0]))), int(round(float(point[1]))), float(score)))
-            visible_points = [(x, y) for x, y, confidence in points if confidence > self.config.hand_kp_threshold]
-            if visible_points:
-                xs = [point[0] for point in visible_points]
-                ys = [point[1] for point in visible_points]
-                box = (min(xs), min(ys), max(xs), max(ys))
-            else:
-                box = (0, 0, 0, 0)
+            box = _box_from_keypoints(points, self.config.hand_kp_threshold, 0, 0)
             hands_by_side[side] = {"box": box, "points": points}
         return hands_by_side
 
     def detect_wholebody_hand(self, side: str, body_points: list[tuple[int, int, float]]) -> HandPayload | None:
-        payload = self._wholebody_hands_by_body.get(tuple(body_points), {}).get(side)
+        key = tuple((x, y) for x, y, _ in body_points)
+        payload = self._wholebody_hands_by_body.get(key, {}).get(side)
         if payload is None:
             return None
         return {
@@ -721,19 +724,18 @@ class ONNXPoseHandRunner:
         if not world_landmarks or not image_landmarks or len(image_landmarks) < 21 or len(world_landmarks) < 21:
             return None
 
-        scale_candidates = []
-        pixel_candidates = []
-        for first_index, second_index in ((0, 5), (0, 9), (0, 17), (5, 9), (9, 13), (13, 17)):
-            pixel_distance = self._distance2(image_landmarks[first_index], image_landmarks[second_index], crop_width, crop_height)
-            world_distance = self._distance3(world_landmarks[first_index], world_landmarks[second_index])
-            if pixel_distance > 1e-6 and world_distance > 1e-6:
-                scale_candidates.append(pixel_distance / world_distance)
-                pixel_candidates.append(pixel_distance)
-        if not scale_candidates:
+        scale_result = _estimate_world_to_pixel_scale(
+            image_landmarks,
+            world_landmarks,
+            ((0, 5), (0, 9), (0, 17), (5, 9), (9, 13), (13, 17)),
+            crop_width,
+            crop_height,
+        )
+        if scale_result is None:
             return None
 
-        world_to_pixel_scale = float(np.median(np.asarray(scale_candidates, dtype=np.float64)))
-        pixel_reference = max(float(np.median(np.asarray(pixel_candidates, dtype=np.float64))), 12.0)
+        world_to_pixel_scale, pixel_median = scale_result
+        pixel_reference = max(pixel_median, 12.0)
         max_depth = max(pixel_reference * 0.8, 16.0)
         root_z = float(world_landmarks[0].z)
         return [

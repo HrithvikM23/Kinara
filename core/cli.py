@@ -680,5 +680,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-foot-lock", action="store_true", help="Disable export-time foot planting stabilization.")
     parser.add_argument("--foot-lock-velocity", type=float, default=8.0, help="Maximum per-frame foot movement considered planted during export cleanup.")
     parser.add_argument("--foot-lock-max-lift", type=float, default=16.0, help="Maximum distance from the detected floor for export foot locking.")
+    parser.add_argument("--no-normalize-skeleton-scale", action="store_true", help="Disable distance-invariant skeleton scale normalization across videos.")
+    parser.add_argument("--target-torso-length", type=float, default=50.0, help="Target torso length for distance-invariant skeleton scale normalization.")
     parser.add_argument("--no-preview", action="store_true", help="Disable the live OpenCV preview window.")
     return parser

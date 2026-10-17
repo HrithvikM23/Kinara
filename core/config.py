@@ -98,6 +98,8 @@ class PipelineConfig:
     export_foot_lock_enabled: bool = True
     export_foot_lock_velocity: float = 8.0
     export_foot_lock_max_lift: float = 16.0
+    normalize_skeleton_scale: bool = True
+    target_torso_length: float = 50.0
     fps_log_interval: float = 0.0
     fps_overlay_enabled: bool = True
     benchmark_frames: int = 0
@@ -140,6 +142,12 @@ class PipelineConfig:
     metadata_output_path: Path = field(init=False)
 
     def __post_init__(self) -> None:
+        self._coerce_paths()
+        self._coerce_colors()
+        self._prepare_output_directory()
+        self._resolve_output_paths()
+
+    def _coerce_paths(self) -> None:
         if self.body_model_path is not None:
             self.body_model_path = Path(self.body_model_path)
 
@@ -155,6 +163,7 @@ class PipelineConfig:
         if self.calibration_3d_path is not None:
             self.calibration_3d_path = Path(self.calibration_3d_path)
 
+    def _coerce_colors(self) -> None:
         def _coerce_color(val: Any) -> tuple[int, int, int]:
             if isinstance(val, (list, tuple)) and len(val) == 3:
                 return (int(val[0]), int(val[1]), int(val[2]))
@@ -169,7 +178,10 @@ class PipelineConfig:
         self.hand_line_color = _coerce_color(self.hand_line_color)
         self.hand_point_color = _coerce_color(self.hand_point_color)
 
-        if self.output_directory is None:
+    def _prepare_output_directory(self) -> None:
+        if self.output_path is not None:
+            output_directory = Path(self.output_path).parent
+        elif self.output_directory is None:
             output_directory = self.project_root / "outputs"
         else:
             output_directory = Path(self.output_directory)
@@ -178,8 +190,8 @@ class PipelineConfig:
         except OSError as exc:
             raise RuntimeError(f"output directory could not be created: {output_directory} ({exc})") from exc
         self.output_directory = output_directory
-        resolved_output_directory = self.output_directory
 
+    def _resolve_output_paths(self) -> None:
         if self.output_basename is None:
             if isinstance(self.video_path, Path):
                 base_name = self.video_path.stem
@@ -192,12 +204,6 @@ class PipelineConfig:
 
         if self.output_path is not None:
             requested_output_path = Path(self.output_path)
-            self.output_directory = requested_output_path.parent
-            try:
-                self.output_directory.mkdir(parents=True, exist_ok=True)
-            except OSError as exc:
-                raise RuntimeError(f"output directory could not be created: {self.output_directory} ({exc})") from exc
-            resolved_output_directory = self.output_directory
             base_name = sanitize_output_basename(requested_output_path.stem)
             self.video_extension = requested_output_path.suffix or ".mp4"
         else:
@@ -209,6 +215,8 @@ class PipelineConfig:
         if not re.fullmatch(r"[\x20-\x7e]+", output_fourcc):
             raise ValueError(f"output FourCC must contain only printable ASCII characters: {self.output_fourcc}")
 
+        assert self.output_directory is not None
+        resolved_output_directory = self.output_directory
         self.run_index = self._next_run_index(base_name)
         self.rendered_output_path = resolved_output_directory / f"{base_name} rendered-{self.run_index}{self.video_extension}"
         self.fbx_output_path = resolved_output_directory / f"{base_name} fbx-{self.run_index}.fbx"

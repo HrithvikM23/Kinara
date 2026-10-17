@@ -33,7 +33,12 @@ class VideoInputSource:
         return self.cap.read()
 
     def skip_frames(self, frame_count: int) -> None:
-        for _ in range(max(0, frame_count)):
+        if frame_count <= 0:
+            return
+        target = self.cap.get(cv2.CAP_PROP_POS_FRAMES) + frame_count
+        if self.cap.set(cv2.CAP_PROP_POS_FRAMES, target):
+            return
+        for _ in range(frame_count):
             ok, _ = self.cap.read()
             if not ok:
                 break
@@ -95,4 +100,3 @@ class VideoCaptureSession:
     def close(self) -> None:
         self.source.close()
         self.writer.close()
-        cv2.destroyAllWindows()

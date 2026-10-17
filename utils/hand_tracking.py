@@ -5,8 +5,7 @@ import math
 from utils.hand_fallback import is_hand_detection_valid
 from utils.prediction import translate_box, translate_points
 
-Point = tuple[int, int, float]
-Box = tuple[int, int, int, int]
+from utils.skeleton import Box, Point
 
 PALM_INDICES = (0, 5, 9, 13, 17)
 

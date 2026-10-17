@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
+from typing import Any, NamedTuple
 
 PROFILE_FASTEST = "fastest"
 PROFILE_MID = "mid"
@@ -9,8 +8,7 @@ PROFILE_QUALITY = "quality"
 PROFILE_NAMES = (PROFILE_FASTEST, PROFILE_MID, PROFILE_QUALITY)
 
 
-@dataclass(frozen=True, slots=True)
-class RuntimeProfile:
+class RuntimeProfile(NamedTuple):
     name: str
     description: str
     settings: dict[str, Any]

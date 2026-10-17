@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-Point = tuple[int, int, float]
-Box = tuple[int, int, int, int]
+from utils.skeleton import Box, Point
 
 
 def predict_points(

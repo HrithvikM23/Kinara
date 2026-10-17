@@ -123,13 +123,20 @@ def run_multi_person_assignment(config: PipelineConfig) -> bool:
         "max_people": config.max_people,
         "identity_hints": {key: list(value) for key, value in config.identity_hints.items()},
     }
+    target_torso = config.target_torso_length if getattr(config, "normalize_skeleton_scale", True) else 0.0
     export_multi_person_json(
         config.json_output_path,
         fps=session.fps,
         frames=cleaned_motion_frames,
         metadata=export_metadata,
+        target_torso_length=target_torso,
     )
-    exported_fbx_paths = export_multi_person_fbx_bundle(config.fbx_output_path, session.fps, cleaned_motion_frames)
+    exported_fbx_paths = export_multi_person_fbx_bundle(
+        config.fbx_output_path,
+        session.fps,
+        cleaned_motion_frames,
+        target_torso_length=target_torso,
+    )
     write_run_metadata(
         config.metadata_output_path,
         build_run_metadata(

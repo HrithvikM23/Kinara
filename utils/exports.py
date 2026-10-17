@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import statistics
 
@@ -26,39 +27,26 @@ from utils.skeleton import (
 )
 
 
-def _to_world(x: int, y: int, z: float = 0.0) -> tuple[float, float, float]:
+def _to_world(x: float | int, y: float | int, z: float | int = 0.0) -> tuple[float, float, float]:
     return float(x), float(-y), float(z)
 
 
-def _to_world_float(x: float, y: float, z: float = 0.0) -> tuple[float, float, float]:
-    return float(x), float(-y), float(z)
+def _average_screen_points(points: list[Point]) -> tuple[float, float, float]:
+    if not points:
+        return 0.0, 0.0, 0.0
+    point_count = len(points)
+    sum_x = sum(float(p[0]) for p in points)
+    sum_y = sum(float(p[1]) for p in points)
+    sum_conf = sum(float(p[2]) for p in points)
+    return sum_x / point_count, sum_y / point_count, sum_conf / point_count
 
 
 def _average_points(points: list[Point]) -> tuple[float, float, float, float]:
     if not points:
         return 0.0, 0.0, 0.0, 0.0
-    point_count = len(points)
-    sum_x = 0
-    sum_y = 0
-    sum_conf = 0.0
-    for x, y, conf in points:
-        sum_x += x
-        sum_y += y
-        sum_conf += conf
-    x, y, z = _to_world(int(round(sum_x / point_count)), int(round(sum_y / point_count)))
-    return x, y, z, float(sum_conf / point_count)
-
-
-def _average_screen_points(points: list[Point]) -> tuple[float, float, float]:
-    point_count = max(len(points), 1)
-    sum_x = 0.0
-    sum_y = 0.0
-    sum_conf = 0.0
-    for x, y, conf in points:
-        sum_x += float(x)
-        sum_y += float(y)
-        sum_conf += float(conf)
-    return sum_x / point_count, sum_y / point_count, sum_conf / point_count
+    mean_x, mean_y, mean_conf = _average_screen_points(points)
+    x, y, z = _to_world(round(mean_x), round(mean_y))
+    return x, y, z, mean_conf
 
 
 def _make_joint(x: float, y: float, z: float, confidence: float) -> JointValue:
@@ -220,8 +208,8 @@ def _derive_head_joints(body_points: list[Point], joint_depths: dict[str, float]
 
     shoulder_depth = float((joint_depths.get("LeftShoulder", 0.0) + joint_depths.get("RightShoulder", 0.0)) * 0.5)
     head_depth = shoulder_depth
-    neck_world = _to_world_float(neck_x, neck_y, shoulder_depth)
-    head_world = _to_world_float(head_x, head_y, head_depth)
+    neck_world = _to_world(neck_x, neck_y, shoulder_depth)
+    head_world = _to_world(head_x, head_y, head_depth)
     return (
         _make_joint(neck_world[0], neck_world[1], neck_world[2], derived_conf),
         _make_joint(head_world[0], head_world[1], head_world[2], derived_conf),
@@ -242,8 +230,8 @@ def _derive_foot_chain(
         foot_point = body_points[foot_index]
         toe_point = body_points[toe_index]
         if foot_point[2] > 0.0 and toe_point[2] > 0.0:
-            foot_world = _to_world_float(foot_point[0], foot_point[1], foot_depth)
-            toe_world = _to_world_float(toe_point[0], toe_point[1], toe_depth)
+            foot_world = _to_world(foot_point[0], foot_point[1], foot_depth)
+            toe_world = _to_world(toe_point[0], toe_point[1], toe_depth)
             return (
                 _make_joint(foot_world[0], foot_world[1], foot_world[2], foot_point[2]),
                 _make_joint(toe_world[0], toe_world[1], toe_world[2], toe_point[2]),
@@ -253,8 +241,8 @@ def _derive_foot_chain(
     foot_x, foot_y, derived_conf = foot_point
     toe_x, toe_y, _ = toe_point
 
-    foot_world = _to_world_float(foot_x, foot_y, foot_depth)
-    toe_world = _to_world_float(toe_x, toe_y, toe_depth)
+    foot_world = _to_world(foot_x, foot_y, foot_depth)
+    toe_world = _to_world(toe_x, toe_y, toe_depth)
     return (
         _make_joint(foot_world[0], foot_world[1], foot_world[2], derived_conf),
         _make_joint(toe_world[0], toe_world[1], toe_world[2], derived_conf),
@@ -424,10 +412,151 @@ def _ground_z_axis_frames(frames: list[dict[str, object]]) -> list[dict[str, obj
     return _ground_joint_frames_on_axis(frames, "z")
 
 
-def _normalize_export_frames(frames: list[dict[str, object]]) -> list[dict[str, object]]:
+def _measure_frame_torso_length(joint_map: JointMap) -> float | None:
+    root = joint_map.get("HipsRoot")
+    if not root or not _joint_is_valid(root):
+        return None
+
+    neck = joint_map.get("Neck")
+    if neck and _joint_is_valid(neck):
+        dist = math.sqrt(
+            (neck["x"] - root["x"]) ** 2
+            + (neck["y"] - root["y"]) ** 2
+            + (neck["z"] - root["z"]) ** 2
+        )
+        if dist > 1.0:
+            return dist
+
+    chest = joint_map.get("Chest")
+    if chest and _joint_is_valid(chest):
+        dist = math.sqrt(
+            (chest["x"] - root["x"]) ** 2
+            + (chest["y"] - root["y"]) ** 2
+            + (chest["z"] - root["z"]) ** 2
+        )
+        if dist > 1.0:
+            return dist / 0.70
+
+    return None
+
+
+def _smooth_scale_factors(raw_scales: list[float], alpha: float = 0.20) -> list[float]:
+    if not raw_scales:
+        return []
+    forward = [raw_scales[0]]
+    for val in raw_scales[1:]:
+        forward.append(alpha * val + (1.0 - alpha) * forward[-1])
+    smoothed = [0.0] * len(forward)
+    smoothed[-1] = forward[-1]
+    for i in range(len(forward) - 2, -1, -1):
+        smoothed[i] = alpha * forward[i] + (1.0 - alpha) * smoothed[i + 1]
+    return smoothed
+
+
+def _scale_normalize_frames(
+    frames: list[dict[str, object]],
+    target_torso_length: float = 50.0,
+) -> list[dict[str, object]]:
+    if not frames or target_torso_length <= 0:
+        return frames
+
+    measured_lengths: list[float | None] = []
+    valid_lengths: list[float] = []
+    for frame in frames:
+        joints = _frame_joint_map(frame)
+        length = _measure_frame_torso_length(joints) if joints else None
+        measured_lengths.append(length)
+        if length is not None and length > 1.0:
+            valid_lengths.append(length)
+
+    if not valid_lengths:
+        return frames
+
+    median_length = statistics.median(valid_lengths)
+
+    raw_scales: list[float] = []
+    last_valid_scale = target_torso_length / max(median_length, 1.0)
+    for length in measured_lengths:
+        if length is not None and length > 1.0:
+            raw_scale = target_torso_length / length
+            last_valid_scale = raw_scale
+            raw_scales.append(raw_scale)
+        else:
+            raw_scales.append(last_valid_scale)
+
+    smooth_scales = _smooth_scale_factors(raw_scales)
+
+    scaled_frames: list[dict[str, object]] = []
+    for frame_idx, frame in enumerate(frames):
+        joints = frame.get("joints")
+        if not isinstance(joints, dict):
+            scaled_frames.append(frame)
+            continue
+
+        scale = smooth_scales[frame_idx]
+        root = joints.get("HipsRoot")
+        if root and _joint_is_valid(root):
+            cx, cy, cz = float(root["x"]), float(root["y"]), float(root["z"])
+        else:
+            cx, cy, cz = 0.0, 0.0, 0.0
+
+        scaled_joints: JointMap = {}
+        for name, joint in cast(JointMap, joints).items():
+            if not isinstance(joint, dict):
+                continue
+            if not _joint_is_valid(joint):
+                scaled_joints[name] = _copy_joint_value(joint)
+                continue
+            scaled_joints[name] = {
+                "x": cx + (float(joint["x"]) - cx) * scale,
+                "y": cy + (float(joint["y"]) - cy) * scale,
+                "z": cz + (float(joint["z"]) - cz) * scale,
+                "confidence": float(joint.get("confidence", 0.0)),
+            }
+
+        scaled_frame = dict(frame)
+        scaled_frame["joints"] = scaled_joints
+        scaled_frames.append(scaled_frame)
+
+    return scaled_frames
+
+
+def normalize_joint_map_scale(joint_map: JointMap, target_torso_length: float = 50.0) -> JointMap:
+    if not joint_map or target_torso_length <= 0.0:
+        return joint_map
+    torso_len = _measure_frame_torso_length(joint_map)
+    if torso_len is None or torso_len <= 1.0:
+        return joint_map
+    scale = target_torso_length / torso_len
+    root = joint_map.get("HipsRoot")
+    if root and _joint_is_valid(root):
+        cx, cy, cz = float(root["x"]), float(root["y"]), float(root["z"])
+    else:
+        cx, cy, cz = 0.0, 0.0, 0.0
+    scaled: JointMap = {}
+    for name, joint in joint_map.items():
+        if not _joint_is_valid(joint):
+            scaled[name] = _copy_joint_value(joint)
+            continue
+        scaled[name] = {
+            "x": cx + (float(joint["x"]) - cx) * scale,
+            "y": cy + (float(joint["y"]) - cy) * scale,
+            "z": cz + (float(joint["z"]) - cz) * scale,
+            "confidence": float(joint.get("confidence", 0.0)),
+        }
+    return scaled
+
+
+def _normalize_export_frames(
+    frames: list[dict[str, object]],
+    target_torso_length: float = 50.0,
+) -> list[dict[str, object]]:
     if frames and "people" in frames[0]:
-        return _normalize_multi_person_frames(frames)
-    return _ground_z_axis_frames(_z_up_joint_frames(frames))
+        return _normalize_multi_person_frames(frames, target_torso_length=target_torso_length)
+    z_up = _z_up_joint_frames(frames)
+    if target_torso_length > 0:
+        z_up = _scale_normalize_frames(z_up, target_torso_length=target_torso_length)
+    return _ground_z_axis_frames(z_up)
 
 
 def _build_skeleton_metadata() -> list[dict[str, str | None]]:
@@ -546,10 +675,13 @@ def _collect_multi_person_joint_tracks(frames: list[dict[str, object]]) -> dict[
     return person_frames
 
 
-def _normalize_multi_person_frames(frames: list[dict[str, object]]) -> list[dict[str, object]]:
+def _normalize_multi_person_frames(
+    frames: list[dict[str, object]],
+    target_torso_length: float = 50.0,
+) -> list[dict[str, object]]:
     person_tracks = _collect_multi_person_joint_tracks(frames)
     normalized_tracks = {
-        person_key: _normalize_export_frames(person_motion_frames)
+        person_key: _normalize_export_frames(person_motion_frames, target_torso_length=target_torso_length)
         for person_key, person_motion_frames in person_tracks.items()
     }
     normalized_frames: list[dict[str, object]] = []
@@ -608,7 +740,6 @@ def _write_motion_json(
         "metadata": metadata,
         "frames": frames,
     }
-    import os
     tmp_path = output_path.with_suffix(output_path.suffix + '.tmp')
     try:
         with tmp_path.open("w", encoding="utf-8") as handle:
@@ -626,9 +757,10 @@ def export_motion_json(
     frames: list[dict[str, object]],
     metadata: dict[str, object],
     frames_are_normalized: bool = False,
+    target_torso_length: float = 50.0,
 ) -> None:
     if not frames_are_normalized:
-        frames = _normalize_export_frames(frames)
+        frames = _normalize_export_frames(frames, target_torso_length=target_torso_length)
     _write_motion_json(
         output_path,
         "kinara-motion-json-v1",
@@ -644,9 +776,10 @@ def export_multi_person_json(
     frames: list[dict[str, object]],
     metadata: dict[str, object],
     frames_are_normalized: bool = False,
+    target_torso_length: float = 50.0,
 ) -> None:
     if not frames_are_normalized:
-        frames = _normalize_multi_person_frames(frames)
+        frames = _normalize_multi_person_frames(frames, target_torso_length=target_torso_length)
     _write_motion_json(
         output_path,
         "kinara-multi-person-json-v1",
@@ -737,6 +870,7 @@ def export_multi_person_fbx_bundle(
     output_path: Path,
     fps: float,
     frames: list[dict[str, object]],
+    target_torso_length: float = 50.0,
 ) -> list[Path]:
     if not frames:
         return []
@@ -748,7 +882,7 @@ def export_multi_person_fbx_bundle(
     stem = output_path.stem
     for person_key, person_motion_frames in person_frames.items():
         person_output_path = output_path.with_name(f"{stem}_{person_key}{suffix}")
-        export_motion_fbx(person_output_path, fps, person_motion_frames)
+        export_motion_fbx(person_output_path, fps, person_motion_frames, target_torso_length=target_torso_length)
         exported_paths.append(person_output_path)
 
     return exported_paths
@@ -777,12 +911,18 @@ def _fbx_template_header() -> list[str]:
     ]
 
 
-def export_motion_fbx(output_path: Path, fps: float, frames: list[dict[str, object]], frames_are_normalized: bool = False) -> None:
+def export_motion_fbx(
+    output_path: Path,
+    fps: float,
+    frames: list[dict[str, object]],
+    frames_are_normalized: bool = False,
+    target_torso_length: float = 50.0,
+) -> None:
     if not frames:
         return
 
     if not frames_are_normalized:
-        frames = _normalize_export_frames(frames)
+        frames = _normalize_export_frames(frames, target_torso_length=target_torso_length)
     rest_joints = _compute_rest_joints(frames)
     local_frames = [_localize_joint_map(_frame_joint_map(frame)) for frame in frames]
     

@@ -37,7 +37,6 @@ dependencies = [
     "onnxruntime>=1.18",
     "opencv-contrib-python>=4.9,<5.0",
     "protobuf>=4.25.3,<5",
-    "pyinstaller>=6.0",
     "pywebview>=5.0",
     "rtmlib>=0.0.15",
 ]

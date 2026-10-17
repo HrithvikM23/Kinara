@@ -686,7 +686,98 @@ class KinaraWebAPI:
         return args
 
 
+def _webview2_installed() -> bool:
+    """Return True if Edge WebView2 runtime is present (Windows-only check)."""
+    if sys.platform != "win32":
+        return True  # macOS/Linux use different pywebview backends
+    import winreg  # stdlib, Windows only
+    # ponytail: checks only the two most common registry paths; enterprise
+    # custom-install locations are not covered — upgrade to a full pv.token
+    # check via subprocess if this ever misses installs in the wild.
+    _GUIDS = [
+        r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
+        r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
+        r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{2CD8A007-E189-409D-A2C8-9AF4EF3C72AA}",
+    ]
+    for path in _GUIDS:
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, path):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+_WEBVIEW2_URL = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
+
+
+def _install_webview2() -> bool:
+    """Download and silently install WebView2 bootstrapper. Returns True on success."""
+    import tempfile
+    import urllib.request
+    print("[INFO] Downloading WebView2 runtime (~2 MB)...", flush=True)
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".exe", delete=False) as f:
+            urllib.request.urlretrieve(_WEBVIEW2_URL, f.name)
+            installer = f.name
+        print("[INFO] Installing WebView2 runtime...", flush=True)
+        result = subprocess.run([installer, "/silent", "/install"])
+        import os; os.unlink(installer)
+        return result.returncode == 0
+    except Exception as e:
+        print(f"[ERROR] Auto-install failed: {e}", file=sys.stderr)
+        return False
+
+
+def _handle_missing_webview2() -> None:
+    """Ask user to auto-install WebView2; relaunch on success, show link on failure."""
+    print(
+        "[ERROR] Microsoft Edge WebView2 Runtime is not installed.\n"
+        f"        Manual download: {_WEBVIEW2_URL}",
+        file=sys.stderr,
+    )
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        root = tk.Tk()
+        root.withdraw()
+        want_install = messagebox.askyesno(
+            "Missing WebView2 Runtime",
+            "Kinara requires the Microsoft Edge WebView2 Runtime,\n"
+            "which is not installed on this machine.\n\n"
+            "Install it now? (~2 MB download, no admin needed)\n\n"
+            "Click Yes to install automatically, No to open the download page.",
+        )
+        root.destroy()
+    except Exception:
+        want_install = False  # no GUI available — user must install manually
+
+    if want_install:
+        if _install_webview2():
+            # Relaunch so pywebview picks up the newly installed runtime
+            subprocess.Popen([sys.executable] + sys.argv)
+        else:
+            try:
+                import tkinter as tk
+                from tkinter import messagebox
+                r = tk.Tk(); r.withdraw()
+                messagebox.showerror(
+                    "Install Failed",
+                    f"Auto-install failed.\nPlease install manually:\n{_WEBVIEW2_URL}",
+                )
+                r.destroy()
+            except Exception:
+                pass
+    else:
+        import webbrowser
+        webbrowser.open(_WEBVIEW2_URL)
+
+
 def main() -> None:
+    if not _webview2_installed():
+        _handle_missing_webview2()
+        sys.exit(0)
+
     api = KinaraWebAPI()
     ui_html = PROJECT_ROOT / "app" / "ui" / "index.html"
     window = webview.create_window(

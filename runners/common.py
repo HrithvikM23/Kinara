@@ -24,7 +24,8 @@ def export_motion_bundle(
     if not frames:
         return
     frames = cleanup_motion_frames(frames, config)
-    normalized_frames = _normalize_export_frames(frames)
+    target_torso = config.target_torso_length if getattr(config, "normalize_skeleton_scale", True) else 0.0
+    normalized_frames = _normalize_export_frames(frames, target_torso_length=target_torso)
     export_motion_json(config.json_output_path, fps, normalized_frames, metadata, frames_are_normalized=True)
     export_motion_fbx(config.fbx_output_path, fps, normalized_frames, frames_are_normalized=True)
 

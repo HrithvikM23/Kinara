@@ -13,7 +13,7 @@ BODY_SEGMENT_GROUPS = {
 
 
 def _distance(a: Point, b: Point) -> float:
-    return math.hypot(float(b[0] - a[0]), float(b[1] - a[1]))
+    return math.dist(a[:2], b[:2])
 
 
 def _blend(previous: float, current: float, alpha: float) -> float:
@@ -35,7 +35,7 @@ class BodyKinematicConstraints:
 
         constrained = list(points)
         self._update_target_lengths(constrained)
-        self._mirror_segment_targets()
+        # 2D mirroring is disabled because perspective foreshortening makes it counterproductive
         self._apply_length_targets(constrained)
         return constrained
 
@@ -54,10 +54,6 @@ class BodyKinematicConstraints:
                 key = (parent_index, child_index)
                 previous = self._target_lengths.get(key)
                 self._target_lengths[key] = length if previous is None else _blend(previous, length, alpha)
-
-    def _mirror_segment_targets(self) -> None:
-        # 2D mirroring is disabled because perspective foreshortening makes it counterproductive
-        return
 
     def _apply_length_targets(self, points: list[Point]) -> None:
         correction = self.config.body_length_correction

@@ -219,13 +219,20 @@ def run_fused_assignments(
                 metadata,
             )
         cleaned_motion_frames = cleanup_multi_person_frames(motion_frames, config)
+        target_torso = config.target_torso_length if getattr(config, "normalize_skeleton_scale", True) else 0.0
         export_multi_person_json(
             config.json_output_path,
             fps=export_fps,
             frames=cleaned_motion_frames,
             metadata=metadata,
+            target_torso_length=target_torso,
         )
-        exported_fbx_paths = export_multi_person_fbx_bundle(config.fbx_output_path, export_fps, cleaned_motion_frames)
+        exported_fbx_paths = export_multi_person_fbx_bundle(
+            config.fbx_output_path,
+            export_fps,
+            cleaned_motion_frames,
+            target_torso_length=target_torso,
+        )
         write_run_metadata(
             config.metadata_output_path,
             build_run_metadata(

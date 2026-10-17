@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from typing import NotRequired, TypedDict
 
-from utils.skeleton import JointMap, Point
-
-Box = tuple[int, int, int, int]
+from utils.skeleton import Box, JointMap, Point
 
 
 class HandPayload(TypedDict):

@@ -289,13 +289,20 @@ def run_parallel_multi_person(config: PipelineConfig) -> bool:
             "parallel_overlap_seconds": overlap_seconds,
             "parallel_chunk_count": len(results),
         }
+        target_torso = config.target_torso_length if getattr(config, "normalize_skeleton_scale", True) else 0.0
         export_multi_person_json(
             config.json_output_path,
             fps=fps,
             frames=cleaned_motion_frames,
             metadata=export_metadata,
+            target_torso_length=target_torso,
         )
-        exported_fbx_paths = export_multi_person_fbx_bundle(config.fbx_output_path, fps, cleaned_motion_frames)
+        exported_fbx_paths = export_multi_person_fbx_bundle(
+            config.fbx_output_path,
+            fps,
+            cleaned_motion_frames,
+            target_torso_length=target_torso,
+        )
         write_run_metadata(
             config.metadata_output_path,
             build_run_metadata(

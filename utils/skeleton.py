@@ -12,6 +12,7 @@ class JointSpec:
 
 
 Point = tuple[int, int, float]
+Box = tuple[int, int, int, int]
 JointValue = dict[str, float]
 JointMap = dict[str, JointValue]
 FACE_POINT_INDICES = (0, 1, 2, 3, 4)

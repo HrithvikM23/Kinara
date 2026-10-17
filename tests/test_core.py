@@ -383,7 +383,7 @@ class CoreLogicTests(unittest.TestCase):
         scaled_corners = np.array([[[20.0, 24.0]]], dtype=np.float32)
         scaled_ids = np.array([[3]], dtype=np.int32)
 
-        with patch("cv2.aruco.interpolateCornersCharuco", return_value=(1, scaled_corners, scaled_ids)):
+        with patch("cv2.aruco.interpolateCornersCharuco", return_value=(1, scaled_corners, scaled_ids), create=True):
             _enable_low_resolution_charuco_detection(board, detection_strictness="balanced")
             corners, ids = board.detect_image(np.zeros((10, 12, 3), dtype=np.uint8))
 
@@ -1080,6 +1080,13 @@ class CoreLogicTests(unittest.TestCase):
         anchored = anchor_hand_to_wrist(raw_hand, wrist)
         self.assertTrue(is_hand_detection_valid(anchored, wrist, elbow, config))
 
+        from utils.hand_fallback import HAND_REJECTION_COUNTS
+        HAND_REJECTION_COUNTS.clear()
+        self.assertFalse(is_hand_detection_valid(None, wrist, elbow, config, record_telemetry=False))
+        self.assertEqual(len(HAND_REJECTION_COUNTS), 0)
+        self.assertFalse(is_hand_detection_valid(None, wrist, elbow, config, record_telemetry=True))
+        self.assertEqual(HAND_REJECTION_COUNTS["missing_points"], 1)
+
     def test_hand_detection_score_prefers_temporally_consistent_hand(self) -> None:
         config = PipelineConfig()
         wrist = (100, 100, 0.9)
@@ -1387,6 +1394,212 @@ class CoreLogicTests(unittest.TestCase):
         # Should stay centered on wrist (100, 100) instead of shooting off-screen
         self.assertEqual(box, (20, 20, 180, 180))
 
+    def test_video_capture_session_close_does_not_destroy_all_windows(self) -> None:
+        from camera.capture import VideoCaptureSession
+        with patch("camera.capture.VideoInputSource") as mock_input_class, \
+             patch("camera.capture.VideoOutputWriter") as mock_writer_class, \
+             patch("cv2.destroyAllWindows") as mock_destroy:
+            mock_source = SimpleNamespace(frame_width=640, frame_height=480, fps=30.0, close=unittest.mock.MagicMock())
+            mock_writer = SimpleNamespace(close=unittest.mock.MagicMock())
+            mock_input_class.return_value = mock_source
+            mock_writer_class.return_value = mock_writer
+
+            session = VideoCaptureSession(0, Path("test.mp4"))
+            session.close()
+
+            mock_source.close.assert_called_once()
+            mock_writer.close.assert_called_once()
+            mock_destroy.assert_not_called()
+
+    def test_skip_frames_fast_seek_and_fallback(self) -> None:
+        import cv2
+        from camera.capture import VideoInputSource
+        with patch("cv2.VideoCapture") as mock_cap_class:
+            mock_cap = unittest.mock.MagicMock()
+            mock_cap.isOpened.return_value = True
+            mock_cap.get.side_effect = lambda prop: 10.0 if prop == cv2.CAP_PROP_POS_FRAMES else 30.0
+            mock_cap.set.return_value = True
+            mock_cap_class.return_value = mock_cap
+
+            source = VideoInputSource("dummy.mp4")
+            # Should use fast seek
+            source.skip_frames(5)
+            mock_cap.set.assert_called_with(cv2.CAP_PROP_POS_FRAMES, 15.0)
+
+            # When set returns False, falls back to read
+            mock_cap.set.return_value = False
+            mock_cap.read.return_value = (True, np.zeros((10, 10, 3), dtype=np.uint8))
+            source.skip_frames(3)
+            self.assertEqual(mock_cap.read.call_count, 3)
+
+    def test_runtime_profile_namedtuple(self) -> None:
+        from core.runtime_profiles import RuntimeProfile, RUNTIME_PROFILES, PROFILE_FASTEST
+        profile = RUNTIME_PROFILES[PROFILE_FASTEST]
+        self.assertIsInstance(profile, tuple)
+        self.assertTrue(issubclass(RuntimeProfile, tuple))
+        self.assertEqual(profile.name, PROFILE_FASTEST)
+        self.assertIn("model", profile.settings)
+
+    def test_osc_sender_oversized_packet_guard(self) -> None:
+        from network.osc_sender import OSCSender
+        sender = OSCSender(enabled=True)
+        mock_socket = unittest.mock.MagicMock()
+        sender._socket = mock_socket
+
+        # Create large body_points payload that exceeds 60000 bytes
+        huge_body_points = [(i, i, 0.9) for i in range(2500)]
+        with self.assertLogs(level="WARNING") as cm:
+            sender.send_pose(huge_body_points, {})
+        self.assertTrue(any("exceeds 60000 bytes" in msg for msg in cm.output))
+        mock_socket.sendto.assert_not_called()
+
+    def test_box_from_keypoints_helper(self) -> None:
+        from inference.rtmpose import _box_from_keypoints
+
+        # Empty or low-confidence keypoints fall back to frame bounds
+        points = [(10, 20, 0.2), (30, 40, 0.1)]
+        self.assertEqual(_box_from_keypoints(points, 0.5, 100, 200), (0, 0, 100, 200))
+        self.assertEqual(_box_from_keypoints(points, 0.5, 0, 0), (0, 0, 0, 0))
+
+        # Confident keypoints are bounded and clamped
+        points = [(15, 25, 0.9), (85, 95, 0.8), (5, 5, 0.1)]
+        box = _box_from_keypoints(points, 0.5, 100, 100)
+        self.assertEqual(box, (15, 25, 85, 95))
+
+    def test_estimate_world_to_pixel_scale_helper(self) -> None:
+        from types import SimpleNamespace
+        from inference.rtmpose import _estimate_world_to_pixel_scale
+
+        img_landmarks = [
+            SimpleNamespace(x=0.2, y=0.5, z=0.0),
+            SimpleNamespace(x=0.8, y=0.5, z=0.0),
+        ]
+        world_landmarks = [
+            SimpleNamespace(x=-0.3, y=0.0, z=0.0),
+            SimpleNamespace(x=0.3, y=0.0, z=0.0),
+        ]
+        result = _estimate_world_to_pixel_scale(
+            img_landmarks, world_landmarks, ((0, 1),), width=1000, height=1000
+        )
+        self.assertIsNotNone(result)
+        scale, pixel_ref = result  # type: ignore[misc]
+        self.assertAlmostEqual(pixel_ref, 600.0, places=1)
+        self.assertAlmostEqual(scale, 1000.0, places=1)
+
+        # Returns None when distances are zero
+        zero_world = [
+            SimpleNamespace(x=0.0, y=0.0, z=0.0),
+            SimpleNamespace(x=0.0, y=0.0, z=0.0),
+        ]
+        self.assertIsNone(_estimate_world_to_pixel_scale(img_landmarks, zero_world, ((0, 1),), 1000, 1000))
+
+    def test_wholebody_hands_cache_stable_key(self) -> None:
+        from inference.rtmpose import ONNXPoseHandRunner
+
+        runner = ONNXPoseHandRunner.__new__(ONNXPoseHandRunner)
+        runner._wholebody_hands_by_body = {}
+
+        body_points_det = [(10, 20, 0.8500000238418579), (30, 40, 0.9200000166893005)]
+        runner._wholebody_hands_by_body[tuple((x, y) for x, y, _ in body_points_det)] = {
+            "right": {"box": (1, 2, 3, 4), "points": [(1, 2, 0.9)]}
+        }
+
+        # Query with slightly different float confidence
+        body_points_query = [(10, 20, 0.8500000000000001), (30, 40, 0.92)]
+        hand = runner.detect_wholebody_hand("right", body_points_query)
+        self.assertIsNotNone(hand)
+        self.assertEqual(hand["box"], (1, 2, 3, 4))
+
+    def test_pipeline_named_constants_and_wrist_side(self) -> None:
+        from pipeline.pipeline import WRIST_INDEX_TO_SIDE, _RETRY_SCALE_FACTORS, _RETRY_FORWARD_SHIFTS
+
+        self.assertEqual(WRIST_INDEX_TO_SIDE[9], "left")
+        self.assertEqual(WRIST_INDEX_TO_SIDE[10], "right")
+        self.assertEqual(_RETRY_SCALE_FACTORS, (1.3, 1.7, 2.2))
+        self.assertEqual(_RETRY_FORWARD_SHIFTS, (0.15, 0.35, 0.05))
+
+    def test_hand_constraints_repeated_passes_preserve_scale(self) -> None:
+        import math
+        from utils.hand_constraints import enforce_hand_constraints
+
+        # Realistic 21-point hand landmarks (wrist at 100, 100, fingers extending upwards)
+        points = [
+            (100, 100, 0.9),  # 0: wrist
+            (85, 80, 0.9), (75, 65, 0.9), (68, 52, 0.9), (62, 42, 0.9),  # thumb 1-4
+            (90, 50, 0.9), (88, 32, 0.9), (86, 18, 0.9), (85, 5, 0.9),   # index 5-8
+            (100, 48, 0.9), (100, 28, 0.9), (100, 12, 0.9), (100, -2, 0.9), # middle 9-12
+            (110, 52, 0.9), (112, 34, 0.9), (114, 20, 0.9), (115, 8, 0.9), # ring 13-16
+            (120, 58, 0.9), (124, 44, 0.9), (126, 32, 0.9), (128, 22, 0.9), # pinky 17-20
+        ]
+        current_points = list(points)
+        dist_pass0 = math.hypot(current_points[12][0] - current_points[0][0], current_points[12][1] - current_points[0][1])
+
+        for _ in range(5):
+            current_points = enforce_hand_constraints(current_points)
+
+        dist_pass5 = math.hypot(current_points[12][0] - current_points[0][0], current_points[12][1] - current_points[0][1])
+        # Scale must remain stable and not shrink exponentially
+        self.assertAlmostEqual(dist_pass5, dist_pass0, delta=2.0)
+
+    def test_skeleton_scale_normalization_distance_invariance(self) -> None:
+        from utils.exports import _measure_frame_torso_length, _normalize_export_frames
+
+        # Normal person close to camera (torso length = 100)
+        joints_close = build_joint_map(_body_points(), {})
+        frame_close = {"frame_index": 0, "joints": joints_close}
+
+        # Person far from camera: all joints scaled by 0.3x
+        joints_far = {}
+        for name, joint in joints_close.items():
+            joints_far[name] = {
+                "x": joint["x"] * 0.3,
+                "y": joint["y"] * 0.3,
+                "z": joint["z"] * 0.3,
+                "confidence": joint["confidence"],
+            }
+        frame_far = {"frame_index": 0, "joints": joints_far}
+
+        # Normalize both with target_torso_length = 50.0
+        norm_close = _normalize_export_frames([frame_close], target_torso_length=50.0)
+        norm_far = _normalize_export_frames([frame_far], target_torso_length=50.0)
+
+        length_close = _measure_frame_torso_length(norm_close[0]["joints"])
+        length_far = _measure_frame_torso_length(norm_far[0]["joints"])
+
+        self.assertIsNotNone(length_close)
+        self.assertIsNotNone(length_far)
+        assert length_close is not None and length_far is not None
+        self.assertAlmostEqual(length_close, 50.0, delta=0.5)
+        self.assertAlmostEqual(length_far, 50.0, delta=0.5)
+        self.assertAlmostEqual(length_close, length_far, delta=0.5)
+
+    def test_normalize_joint_map_scale(self) -> None:
+        from utils.exports import _measure_frame_torso_length, normalize_joint_map_scale
+
+        joints = build_joint_map(_body_points(), {})
+        scaled = normalize_joint_map_scale(joints, target_torso_length=75.0)
+        length = _measure_frame_torso_length(scaled)
+        self.assertIsNotNone(length)
+        assert length is not None
+        self.assertAlmostEqual(length, 75.0, delta=0.5)
+
+    def test_cli_and_config_skeleton_scale_normalization_flags(self) -> None:
+        parser = build_parser()
+        args_default = parser.parse_args([])
+        self.assertFalse(args_default.no_normalize_skeleton_scale)
+        self.assertEqual(args_default.target_torso_length, 50.0)
+
+        args_override = parser.parse_args(["--no-normalize-skeleton-scale", "--target-torso-length", "65.5"])
+        self.assertTrue(args_override.no_normalize_skeleton_scale)
+        self.assertEqual(args_override.target_torso_length, 65.5)
+
+        assignment = InputAssignment(label="CAM_0", source=0)
+        config = build_config_for_assignment(args_override, assignment, multi_input=False)
+        self.assertFalse(config.normalize_skeleton_scale)
+        self.assertEqual(config.target_torso_length, 65.5)
+
 
 if __name__ == "__main__":
     unittest.main()
+
+

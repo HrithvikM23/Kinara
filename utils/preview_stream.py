@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import queue
+import threading
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -25,12 +27,12 @@ class PreviewFrameSink:
         if self.path is not None:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             
-        self._queue = __import__("queue").Queue(maxsize=2)
+        self._queue = queue.Queue(maxsize=2)
         self._thread = None
-        self._stop_event = __import__("threading").Event()
+        self._stop_event = threading.Event()
         
         if self.path is not None:
-            self._thread = __import__("threading").Thread(target=self._worker_loop, daemon=True)
+            self._thread = threading.Thread(target=self._worker_loop, daemon=True)
             self._thread.start()
 
     @property
@@ -47,7 +49,7 @@ class PreviewFrameSink:
                         self._process_frame(frame, frame_index)
                     finally:
                         self._queue.task_done()
-            except __import__("queue").Empty:
+            except queue.Empty:
                 continue
 
     def write(self, frame, frame_index: int) -> None:
@@ -63,12 +65,12 @@ class PreviewFrameSink:
 
         try:
             self._queue.put_nowait((frame, frame_index))
-        except __import__("queue").Full:
+        except queue.Full:
             try:
                 self._queue.get_nowait()
                 self._queue.task_done()
                 self._queue.put_nowait((frame, frame_index))
-            except (__import__("queue").Empty, __import__("queue").Full):
+            except (queue.Empty, queue.Full):
                 pass
                 
     def _process_frame(self, frame, frame_index: int) -> None:

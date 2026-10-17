@@ -422,6 +422,8 @@ def _build_pipeline_config(
         export_foot_lock_enabled=not args.no_foot_lock,
         export_foot_lock_velocity=args.foot_lock_velocity,
         export_foot_lock_max_lift=args.foot_lock_max_lift,
+        normalize_skeleton_scale=not getattr(args, "no_normalize_skeleton_scale", False),
+        target_torso_length=float(getattr(args, "target_torso_length", 50.0)),
         fps_log_interval=args.fps_log_interval,
         fps_overlay_enabled=not args.no_fps_overlay,
         benchmark_frames=args.benchmark_frames,

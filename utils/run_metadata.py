@@ -27,10 +27,6 @@ def _git_revision(project_root: Path) -> str | None:
     return revision or None
 
 
-def _path_value(path: Path | str | None) -> str | None:
-    return None if path is None else str(path)
-
-
 def build_run_metadata(
     config: PipelineConfig,
     *,
@@ -66,8 +62,8 @@ def build_run_metadata(
             "body_conf_threshold": config.body_conf_threshold,
             "hand_kp_threshold": config.hand_kp_threshold,
             "identity_hints": {key: list(value) for key, value in config.identity_hints.items()},
-            "camera_calibration_path": public_path(_path_value(config.camera_calibration_path), project_root=config.project_root),
-            "calibration_3d_path": public_path(_path_value(config.calibration_3d_path), project_root=config.project_root),
+            "camera_calibration_path": public_path(config.camera_calibration_path, project_root=config.project_root),
+            "calibration_3d_path": public_path(config.calibration_3d_path, project_root=config.project_root),
         },
         "outputs": {
             "rendered": public_path(config.rendered_output_path, project_root=config.project_root),
@@ -83,5 +79,4 @@ def build_run_metadata(
 
 def write_run_metadata(path: Path, metadata: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        json.dump(metadata, handle, indent=2)
+    path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")

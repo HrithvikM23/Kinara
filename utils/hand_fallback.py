@@ -3,7 +3,10 @@ from __future__ import annotations
 import math
 from collections import Counter
 
-Point = tuple[int, int, float]
+from utils.skeleton import Point
+
+# Per-process telemetry counter. Rejections logged in parallel worker processes
+# stay local to that subprocess and are not automatically aggregated across processes.
 HAND_REJECTION_COUNTS: Counter[str] = Counter()
 
 DEFAULT_HAND_TEMPLATE = {
@@ -61,9 +64,11 @@ def is_hand_detection_valid(
     wrist_point: tuple[int, int, float],
     elbow_point: tuple[int, int, float],
     config,
+    record_telemetry: bool = True,
 ) -> bool:
     if hand_points is None or len(hand_points) != 21:
-        record_hand_rejection("missing_points")
+        if record_telemetry:
+            record_hand_rejection("missing_points")
         return False
 
     wrist_xy = _point_xy(wrist_point)
@@ -74,24 +79,28 @@ def is_hand_detection_valid(
     wrist_offset = math.hypot(hand_wrist_xy[0] - wrist_xy[0], hand_wrist_xy[1] - wrist_xy[1])
     max_wrist_offset = max(config.hand_box_min_size * 0.38, forearm_len * config.hand_wrist_max_offset_scale * 1.15)
     if wrist_offset > max_wrist_offset:
-        record_hand_rejection("wrist_offset")
+        if record_telemetry:
+            record_hand_rejection("wrist_offset")
         return False
 
     valid_points = sum(point[2] > config.hand_kp_threshold * 0.5 for point in hand_points)
     if valid_points < config.hand_min_valid_points:
-        record_hand_rejection("valid_points")
+        if record_telemetry:
+            record_hand_rejection("valid_points")
         return False
 
     max_radial = max(math.hypot(point[0] - wrist_xy[0], point[1] - wrist_xy[1]) for point in hand_points[1:])
     if max_radial > max(forearm_len * 2.75, config.hand_box_min_size * 1.40):
-        record_hand_rejection("radial_distance")
+        if record_telemetry:
+            record_hand_rejection("radial_distance")
         return False
 
     palm_indices = (5, 9, 13, 17)
     palm_distances = [math.hypot(hand_points[index][0] - wrist_xy[0], hand_points[index][1] - wrist_xy[1]) for index in palm_indices]
     average_palm_distance = sum(palm_distances) / len(palm_distances)
     if average_palm_distance < forearm_len * 0.035 or average_palm_distance > max(forearm_len * 1.85, config.hand_box_min_size * 0.55):
-        record_hand_rejection("palm_distance")
+        if record_telemetry:
+            record_hand_rejection("palm_distance")
         return False
 
     return True

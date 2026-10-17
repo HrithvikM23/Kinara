@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import socket
 
 import core.config as app_config
@@ -19,7 +20,7 @@ class OSCSender:
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) if enabled else None
 
     def send_pose(self, body_points, hands_by_side, joints=None, metadata=None) -> None:
-        if not self.enabled or self._socket is None:
+        if not (self.enabled and self._socket is not None):
             return
 
         payload = {
@@ -36,13 +37,18 @@ class OSCSender:
             ],
         }
         encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        if len(encoded) > 60000:
+            logging.warning("OSC packet exceeds 60000 bytes, skipping.")
+            return
+        if not (self.enabled and self._socket is not None):
+            return
         try:
             self._socket.sendto(encoded, (self.host, self.port))
         except OSError:
             pass
 
     def send_people(self, people, metadata=None) -> None:
-        if not self.enabled or self._socket is None:
+        if not (self.enabled and self._socket is not None):
             return
 
         total_people = len(people)
@@ -67,9 +73,10 @@ class OSCSender:
             }
             encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
             if len(encoded) > 60000:
-                import logging
                 logging.warning(f"OSC packet for person {person['id']} exceeds 60000 bytes, skipping.")
                 continue
+            if not (self.enabled and self._socket is not None):
+                return
             try:
                 self._socket.sendto(encoded, (self.host, self.port))
             except OSError:

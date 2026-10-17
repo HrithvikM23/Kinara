@@ -14,8 +14,7 @@ from utils.hand_fallback import generate_default_hand
 from utils.payloads import HandPayload
 from utils.smoothing import LandmarkSmoother
 
-Point = tuple[int, int, float]
-Box = tuple[int, int, int, int]
+from utils.skeleton import Box, Point
 
 COLOR_HSV_RANGES: dict[str, tuple[tuple[int, int, int], tuple[int, int, int]]] = {
     "black": ((0, 0, 0), (180, 255, 60)),

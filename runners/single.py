@@ -79,6 +79,7 @@ def run_assignment(config: PipelineConfig) -> bool:
             fps_meter.tick(frame_index)
             draw_fps_overlay(frame, fps_meter, config.fps_overlay_enabled)
             preview_sink.write(frame, frame_index)
+            session.write(frame)
             frame_index += 1
     finally:
         session.close()
