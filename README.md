@@ -2,10 +2,10 @@
 
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Status](https://img.shields.io/badge/status-archived-inactive)
+![Status](https://img.shields.io/badge/status-inactive-orange)
 
-> [!CAUTION]
-> **Project Archived**: This project is archived and is no longer being actively maintained or updated.
+> [!WARNING]
+> **Project Status: Inactive**: This project is currently inactive. New feature development is paused, and issues or pull requests may not be actively monitored or maintained. Users are encouraged to fork the repository for custom improvements or fixes.
 
 Kinara is a local video and webcam motion-tracking pipeline featuring RTMPose CUDA body tracking, MediaPipe pose and hand defaults, ONNX hand pose inference, and legacy YOLO pose tracking. It supports single-person tracking, single-camera multi-person tracking, multi-camera fused 3D triangulation, live UDP motion streaming for Unreal Engine receivers, and stack-safe export generation (JSON, FBX, rendered video).
 
