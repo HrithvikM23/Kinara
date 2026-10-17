@@ -36,18 +36,19 @@ At a high level, Kinara does five jobs:
 | Module | Main responsibility | Consumes | Produces |
 | --- | --- | --- | --- |
 | `app/main.py` | Bootstrap and mode selection | CLI args, input sources | delegated runtime session |
-| `app/kinara_launcher.py` | Native Windows launcher | user selections, presets, workflow tabs | runner command, live preview bridge |
+| `app/kinara_launcher.py` | Standalone executable entrypoint | argv (`--kinara-runner`), system environment | delegated pipeline worker or desktop GUI |
+| `app/kinara_web_launcher.py` | Native desktop PyWebView interface | user interaction, model presets, cameras | runner subprocess orchestration, preview bridge |
 | `core/cli.py` | CLI parsing and source selection | argv, interactive prompts | input assignments |
-| `runtime_profiles.py` | Fastest/mid/quality tuning presets | parsed CLI namespace | profile-applied runtime knobs |
+| `core/backend_selection.py` | Backend requirement rules | CLI flags, backend choices | package & model requirement predicates |
+| `core/runtime_profiles.py` | Fastest/mid/quality tuning presets | parsed CLI namespace | profile-applied runtime knobs |
 | `core/runtime_config.py` | Model prep and config validation | CLI namespace, source assignment | `PipelineConfig` |
-| `runners/` | Single, multi-person, and fused loops | `PipelineConfig`, frames | rendered video, live packets, exports |
+| `core/config.py` | Central runtime config and drawing constants | CLI-derived values | `PipelineConfig` |
+| `runners/` | Single, parallel, multi-person, and fused loops | `PipelineConfig`, frames | rendered video, live packets, exports |
 | `utils/bootstrap_*` | Startup dependency, CUDA, and environment checks | local Python environment | repaired process paths, install plan |
-| `config.py` | Central runtime config and drawing constants | CLI-derived values | `PipelineConfig` |
 | `camera/capture.py` | OpenCV capture and writer wrappers | webcam index or video path | frames, MP4 writer |
 | `inference/rtmpose.py` | Body and hand model execution | frame, crop boxes, config | body detections, optional real foot points, hand points |
 | `pipeline/pipeline.py` | Single-frame body+hand processing | frame, runner, smoother | body points, `hands_by_side`, overlay rendering |
 | `network/osc_sender.py` | Live UDP transport | body points, hands, joints | JSON UDP packets |
-| `utils/bootstrap_*.py` | Runtime environment setup | local filesystem, PATH, installed packages | prepared Python/runtime environment |
 | `utils/normalize.py` | Hand crop geometry | wrist/elbow/body frame bounds | hand crop box |
 | `utils/smoothing.py` | Temporal filtering and short hold | landmarks across frames | smoothed landmarks |
 | `utils/body_constraints.py` | Soft body length constraints | body landmarks, learned limb lengths | steadier body landmarks |
@@ -58,7 +59,8 @@ At a high level, Kinara does five jobs:
 | `utils/fusion.py` | Multi-camera projection and fusion | per-view people/landmarks | fused body/hands/depth |
 | `utils/calibration.py` | ChArUco camera calibration | synchronized calibration videos | camera TOML, quality JSON |
 | `utils/triangulation.py` | Calibrated 3D reconstruction | 2D observations, camera calibration | 3D joint overrides and arrays |
-| `utils/exports.py` | Joint building and export formats | body points, hands, fused depth | motion JSON, FBX data |
+| `utils/exports.py` | Joint building, scale normalization, and export | body points, hands, fused depth | motion JSON, FBX data |
+| `utils/skeleton.py` | Joint hierarchies, edges, Point/Box primitives | joint names, coordinates | typed joint specs and drawing indices |
 | `blender_kinematics/kinara_motion.py` | Blender-side JSON parsing/rest pose prep | Kinara JSON | `MotionClip` |
 | `blender_kinematics/import_kinara_motion.py` | Blender armature import and bake | `MotionClip` | armatures, actions, baked animation |
 
@@ -674,20 +676,22 @@ The result is easier to debug than a deeply abstracted system because each stage
 
 ## Recommended Reading Order In Source
 
-1. `app/main.py`
-2. `core/cli.py`
-3. `core/runtime_config.py`
-4. `runners/`
-5. `config.py`
-6. `pipeline/pipeline.py`
-7. `inference/rtmpose.py`
-8. `utils/smoothing.py`
-9. `utils/hand_fallback.py`
-10. `utils/hand_constraints.py`
-11. `utils/multi_person.py`
-12. `utils/fusion.py`
-13. `utils/exports.py`
-14. `utils/skeleton.py`
-15. `blender_kinematics/kinara_motion.py`
-16. `blender_kinematics/import_kinara_motion.py`
+1. `app/kinara_launcher.py` and `app/kinara_web_launcher.py` (Desktop GUI)
+2. `app/main.py`
+3. `core/cli.py`
+4. `core/backend_selection.py`
+5. `core/runtime_config.py`
+6. `core/config.py`
+7. `runners/` (`single.py`, `parallel_single.py`, `multi_person.py`, `fused.py`)
+8. `pipeline/pipeline.py`
+9. `inference/rtmpose.py`
+10. `utils/smoothing.py`
+11. `utils/hand_fallback.py`
+12. `utils/hand_constraints.py`
+13. `utils/multi_person.py`
+14. `utils/fusion.py`
+15. `utils/exports.py`
+16. `utils/skeleton.py`
+17. `blender_kinematics/kinara_motion.py`
+18. `blender_kinematics/import_kinara_motion.py`
 

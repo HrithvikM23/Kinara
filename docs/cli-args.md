@@ -13,6 +13,20 @@ Function: Creates a calibrated camera TOML from synchronized ChArUco calibration
 Accepted values: flag only.  
 Notes: Use with at least two `--source` video files and `--calibration-output`.
 
+`--config`  
+Function: Specifies a JSON config file whose keys match CLI destination names.  
+Accepted values: path to a `.json` configuration file.  
+Notes: Explicit CLI flags override any matching values loaded from the configuration file.
+
+`--dry-run`  
+Function: Validates input sources, output directories, runtime dependencies, and backend choices without opening video files or initializing neural network models.  
+Accepted values: flag only.
+
+`--benchmark-frames`  
+Function: Automatically terminates the run after processing N frames and prints throughput timing metrics.  
+Accepted range: integer `>= 0`.  
+Default: `0` (processes the entire video or streams indefinitely).
+
 `--runtime-check`  
 Function: Checks/installs the selected runtime dependencies, prepares selected model assets, prints a backend report, then exits without requiring an input source.  
 Accepted values: flag only.  
@@ -102,7 +116,46 @@ Notes: Useful for compressed, distant, or slightly soft calibration clips.
 
 Recommended A3 landscape board: 11 x 8 ChArUco squares, 36 mm square size, 24 mm marker size, marker scale `0.6667`, dictionary `DICT_4X4_50`, latest OpenCV pattern. If your printed square edge measures differently, use the measured value for `--charuco-square-size`. If the board was generated with a legacy online generator, add `--charuco-legacy-pattern`.
 
+## Execution Mode & Multi-Core Processing
+
+`--execution-mode`  
+Function: Controls processing parallelism for single-person video files.  
+Accepted values: `auto`, `serial`, `parallel`.  
+Default: `auto`  
+Notes: `auto` detects eligible long video inputs and hardware capacity to transparently activate multi-worker chunk processing. `serial` forces single-process execution. `parallel` forces multi-worker multiprocessing.
+
+`--pipeline-parallel`  
+Function: Enables real-time pipelined stage execution for webcam and live streams.  
+Accepted values: flag only.  
+Default: disabled  
+Notes: Decouples frame acquisition, neural inference, and preview rendering onto separate concurrently running threads.
+
+`--parallel-workers`  
+Function: Specifies the number of worker processes to spawn for chunk-based video parallelism.  
+Accepted range: integer `>= 0`.  
+Default: `0` (automatically estimated based on available physical CPU cores and GPU capability). Passing `1` disables chunk parallelism.
+
+`--max-cpu-percent`  
+Function: Upper ceiling on logical CPU core utilization permitted for worker thread pools.  
+Accepted range: float from `10.0` to `100.0`.  
+Default: `60.0` (preserves system responsiveness).
+
+`--parallel-chunk-seconds`  
+Function: Duration in seconds of each processing chunk when video parallelism is active.  
+Accepted range: float `>= 0.0`.  
+Default: `0.0` (automatically calculated from video length and worker count).
+
+`--parallel-overlap-seconds`  
+Function: Overlap duration in seconds between consecutive video chunks used to prime and warm up temporal smoothers and trackers.  
+Accepted range: float `>= 0.0`.  
+Default: `0.5`
+
 ## Model Selection
+
+`--yolo-fast-preset`  
+Function: Quick selector for legacy YOLO pose model weights.  
+Accepted values: `nano`, `small`, `medium`, `large`, `xlarge`.  
+Notes: Mapped to corresponding `yolo11*-pose.pt` models. An explicit `--model` argument overrides this preset.
 
 `--model`  
 Function: Selects the body model for the active landmark backend. With YOLO it selects the Ultralytics pose weights. With MediaPipe it selects the MediaPipe pose landmark TFLite asset.  

@@ -1,51 +1,67 @@
-# Body Backend Options
+# Landmark Backend Options
 
-Kinara currently ships two body paths:
+Kinara supports four body tracking backends and three hand tracking backends, allowing users to balance speed, hardware support, and multi-person capability:
 
-- `rtmpose`: RTMPose through `rtmlib`. This is the preferred CUDA body path for RTX 50-series / `sm_120` systems.
-- `rtmpose-wholebody`: RTMPose WholeBody through `rtmlib`; body and hand backends are selected together.
-- `yolo`: Legacy Ultralytics YOLO pose models. Keep this for compatibility and comparisons.
-- `mediapipe`: MediaPipe pose. This is useful for simple local single-person tracking, but it is not the recommended target for future high-speed multi-person work.
+### Body Backends
 
-For RTX 50-series RTMPose runs, prefer:
+- `rtmpose`: RTMPose through `rtmlib`. This is the preferred CUDA body path for RTX systems (including RTX 50-series / `sm_120`), offering state-of-the-art real-time multi-person tracking and high COCO AP.
+- `rtmpose-wholebody`: RTMPose WholeBody through `rtmlib`. A unified model that predicts both body and 21-point hand landmarks in a single pass; selecting this pairs body and hand detection automatically.
+- `yolo`: Ultralytics YOLO pose models (`yolo11n-pose` through `yolo11x-pose`). Kept for baseline comparisons and multi-person ByteTrack/BoT-SORT integration.
+- `mediapipe`: MediaPipe Pose. Suitable for local single-person tracking on CPU or systems without CUDA, with optional relative depth estimation.
+
+### Hand Backends
+
+- `onnx`: Dedicated ONNX-based YOLO26 hand-pose model (variants: `low`, `mid`, `high`, `max`). Runs on wrist-directed crops with retry scaling, palm validation, and physiological knuckle/lane constraints.
+- `rtmpose-wholebody`: Unified WholeBody hand extraction with zero additional crop latency.
+- `mediapipe`: MediaPipe Hands solution for 21-point hand tracking.
+
+---
+
+## Recommended Configurations
+
+For RTX / CUDA RTMPose runs (preferred high-performance setup):
 
 ```powershell
 kinara --landmark-backend rtmpose --rtmpose-device cuda --rtmpose-mode balanced --benchmark-frames 120 --no-preview
 ```
 
-To let RTMPose own both body and hands:
+To let RTMPose WholeBody own both body and hands simultaneously:
 
 ```powershell
 kinara --landmark-backend rtmpose-wholebody --rtmpose-device cuda --rtmpose-mode balanced --benchmark-frames 120 --no-preview
 ```
 
-In the launcher, choosing `rtmpose-wholebody` disables the separate body and hand backend controls because WholeBody is a paired body+hand model.
+In the launcher, choosing `rtmpose-wholebody` disables separate body and hand backend controls because WholeBody is an integrated body+hand model.
 
-If CUDA runtime compatibility is not ready yet, fall back to CPU only for diagnosis:
+For CPU-only fallback or diagnostic testing:
 
 ```powershell
 kinara --landmark-backend rtmpose --rtmpose-device cpu --rtmpose-mode lightweight --benchmark-frames 30 --no-preview
 ```
 
-For legacy YOLO comparisons:
+For legacy YOLO pose comparisons:
 
 ```powershell
 kinara --landmark-backend yolo --yolo-fast-preset nano --benchmark-frames 120 --no-preview
 ```
 
-Legacy YOLO tradeoffs:
+### Legacy YOLO Tradeoffs
 
-- `--yolo-fast-preset nano`: fastest, lowest body accuracy.
-- `--yolo-fast-preset small`: still light, often a better stability/speed balance.
-- `--yolo-fast-preset medium`: balanced offline or GPU mode.
-- `--yolo-fast-preset xlarge`: highest YOLO quality, slowest.
+- `--yolo-fast-preset nano`: Fastest, lowest body accuracy.
+- `--yolo-fast-preset small`: Light, balanced speed/stability.
+- `--yolo-fast-preset medium`: Balanced offline or GPU mode.
+- `--yolo-fast-preset xlarge`: Highest YOLO accuracy, slowest.
 
-RTMPose/RTMO from the OpenMMLab/MMPose family is the preferred non-MediaPipe direction. RTMPose reports strong real-time CPU/GPU speed while keeping high COCO AP, and RTMO is a newer one-stage real-time multi-person pose direction. Kinara's RTMPose path uses `rtmlib` and returns the same 17 COCO body keypoints as the legacy YOLO runner.
+### Hand Model Presets (`--hand-model-variant`)
 
-Current implementation path:
+- `low` / `mid`: YOLO26 hand-pose FP16 (~512px input), optimized for high frame-rate processing.
+- `high` / `max`: YOLO26 hand-pose FP32 (~640px/768px input), highest landmark precision and finger articulation.
+
+---
+
+## Implementation Details
 
 1. `body_backend="rtmpose"` uses `rtmlib` and returns Kinara `BodyDetection` records.
-2. `body_backend="rtmpose-wholebody"` maps WholeBody output into Kinara body and hand payloads.
-3. Existing Kinara smoothing, identity, fusion, export, and Unreal UDP layers stay unchanged.
-4. Benchmark against legacy YOLO with `--benchmark-frames`.
-5. A future TensorRT engine/cache path can build on the current ONNX Runtime backend.
+2. `body_backend="rtmpose-wholebody"` maps WholeBody output into standard Kinara body and hand payloads.
+3. Existing Kinara smoothing, anatomical constraints, distance-invariant scale normalization, identity hints, multi-camera fusion, and export layers remain completely backend-agnostic.
+4. Benchmark your pipeline speed using `--benchmark-frames N` and `--fps-log-interval S`.

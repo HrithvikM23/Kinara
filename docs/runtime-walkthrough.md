@@ -13,7 +13,12 @@ from utils.bootstrap_dependencies import ensure_runtime_ready
 ensure_runtime_ready()
 ```
 
-That means the CLI path does not wait until later to discover runtime problems. It tries to repair the environment before doing anything else. In the native launcher, the Check Runtime button runs this preparation step explicitly, while the Start button passes an internal skip flag so a demo run can start quickly after dependencies and model assets have already been prepared.
+That means the CLI path does not wait until later to discover runtime problems. It tries to repair the environment before doing anything else.
+
+In the native desktop app, the process starts via `app/kinara_launcher.py`:
+- When launched without arguments (or from `Kinara.exe`), it initializes the modern PyWebView interface in `app/kinara_web_launcher.py`. It inspects Windows registry keys for Microsoft Edge WebView2, auto-installs it silently if missing, and renders the responsive control deck (`app/ui/index.html`).
+- When the user clicks **Start**, the launcher spawns a dedicated worker process running `Kinara.exe --kinara-runner ...` (which directly executes `app/main.py`), using the Check Runtime preparation cache to begin inference immediately.
+- The **Check Runtime** button triggers `ensure_runtime_ready()` explicitly to stage packages and model weights before starting.
 
 ### Why that matters
 
@@ -233,9 +238,18 @@ When the frame loop is done, the runtime has a list of raw motion frames. Those 
 
 `_normalize_export_frames()` conceptually does:
 
-1. ground the motion timeline
-2. convert the coordinate conventions into Z-up export space
-3. re-ground the final Z-up result
+1. convert the coordinate conventions into Z-up export space (`_z_up_joint_frames`)
+2. perform distance-invariant scale normalization (`_scale_normalize_frames`): measures torso length (`_measure_frame_torso_length`), applies zero-lag bidirectional temporal smoothing to scale factors (`_smooth_scale_factors`), and scales all joints relative to `HipsRoot` so that character proportions match a standard humanoid scale (default torso length = 50.0 cm) across all frames and videos
+3. ground the final Z-up result on the Z axis (`_ground_z_axis_frames`), ensuring the lowest foot contact rests firmly at $Z=0$
+
+### Distance-invariant scale normalization
+
+Without normalization, character skeletons scale directly with 2D perspective: someone closer to the camera produces huge bones, and stepping back shrinks the armature. `_scale_normalize_frames()` solves this:
+
+- **Metric torso measurement**: `_measure_frame_torso_length()` computes the Euclidean distance between `HipsRoot` and `Neck` (falling back to shoulder or hip spans if torso landmarks are obscured).
+- **Scale factor calculation**: Computes the instantaneous ratio $\text{target\_torso\_length} / \text{measured\_torso\_length}$ (default target is `50.0 cm`, yielding a canonical ~175 cm humanoid character height).
+- **Zero-lag bidirectional smoothing**: `_smooth_scale_factors()` runs forward and backward exponential smoothing passes ($\alpha = 0.20$), ensuring scale factors adapt smoothly to posture changes without lag or jitter.
+- **Root-centered scaling**: Scales all joint coordinates outward from `HipsRoot`, guaranteeing uniform skeletal proportions across disparate camera angles, zoom levels, and actor distances.
 
 ### Metadata enrichment
 
@@ -517,16 +531,17 @@ Look at:
 
 The simplest accurate mental model for Kinara is:
 
-- `app/main.py` bootstraps and chooses the runtime mode
+- `app/kinara_web_launcher.py` and `app/kinara_launcher.py` provide the native desktop UI and process isolation
+- `app/main.py` bootstraps dependencies and chooses the runtime mode
 - `core/cli.py` parses arguments and input assignments
 - `core/runtime_config.py` describes and validates the run
-- `runners` own the single, multi-person, and fused loops
-- `config.py` stores the run settings
-- `inference` detects
-- `pipeline` stabilizes and renders
-- `multi_person` persists identities
-- `fusion` merges cameras
-- `exports` converts landmarks into a durable skeleton timeline
+- `runners` own the single, parallel, multi-person, and fused loops
+- `core/config.py` stores the run configuration and drawing constants
+- `inference` detects body and hand landmarks (RTMPose, WholeBody, YOLO, MediaPipe)
+- `pipeline` stabilizes and renders pose overlays
+- `multi_person` tracks and persists identities across frames
+- `fusion` merges multi-camera views and triangulates 3D points
+- `exports` normalizes scale, grounds axes, and converts landmarks into durable skeleton timelines
 - `blender_kinematics` turns that timeline into a real armature animation
 
 Once that model is clear, the repo becomes much easier to extend safely.

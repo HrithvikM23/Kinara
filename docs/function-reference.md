@@ -14,7 +14,25 @@ For end-to-end execution order and module interaction, pair this file with [Arch
 
 ## `app/main.py`
 
-- `main`: Thin entrypoint. It runs the dependency bootstrap, parses CLI args, resolves sources, and delegates to the single-input or fused runner.
+- `main`: Thin entrypoint. It runs the dependency bootstrap, parses CLI args, resolves sources, and delegates to the single-input, parallel, or fused runner.
+
+## `app/kinara_launcher.py`
+
+- `main`: Standalone executable entrypoint. Dispatches to `app.main.main` when invoked as a runner worker with `--kinara-runner`, or launches the PyWebView desktop app.
+
+## `app/kinara_web_launcher.py`
+
+- `KinaraWebAPI`: Exposes JavaScript API methods for source selection, file picking, preset selection, runtime checks, and process management.
+- `_webview2_installed`: Inspects Windows registry keys for Microsoft Edge WebView2 installation.
+- `_install_webview2`: Downloads and executes the Microsoft Edge WebView2 evergreen bootstrapper silently.
+- `_handle_missing_webview2`: Prompts the user with auto-install or manual download fallback.
+- `main`: Initializes and opens the PyWebView desktop control deck.
+
+## `app/launcher_support.py`
+
+- `APP_TITLE`: Application window title constant.
+- `installer_python_path`: Resolves the appropriate python executable path for subprocess execution across source and packaged modes.
+- `quote`: Safely escapes and quotes command-line argument tokens for Windows execution.
 
 ## `kinara`
 
@@ -28,7 +46,30 @@ For end-to-end execution order and module interaction, pair this file with [Arch
 - `choose_video_gui`: Opens the Tk file picker used by interactive video selection.
 - `choose_camera_assignments_gui`: Interactive helper that asks for camera count and assigns files to `CAM_N` camera labels.
 - `resolve_sources`: Converts CLI or interactive input into a list of `InputAssignment` objects.
+- `explicit_option_dests`: Extracts CLI options that were explicitly supplied on the command line.
 - `build_parser`: Declares the CLI surface.
+
+## `core/backend_selection.py`
+
+- `needs_mediapipe`: True when MediaPipe body or hand backend is active.
+- `needs_onnx_hand`: True when ONNX hand model inference is required.
+- `needs_rtmpose_body`: True when RTMPose body tracking is selected.
+- `needs_yolo_body`: True when legacy Ultralytics YOLO pose is selected.
+
+## `core/config_file.py`
+
+- `load_config_defaults`: Reads JSON config files matching destination argument names to supply file-based default options.
+
+## `core/mediapipe_models.py`
+
+- `DEFAULT_MEDIAPIPE_POSE_MODEL`: Default TFLite model name for MediaPipe pose.
+- `mediapipe_pose_model_names`: Returns list of valid MediaPipe pose model names.
+- `mediapipe_pose_model_complexity`: Maps model filename to MediaPipe complexity index (`0`, `1`, `2`).
+
+## `core/runtime_profiles.py`
+
+- `RUNTIME_PROFILES`: Defines the app-facing `fastest`, `mid`, and `quality` presets.
+- `apply_runtime_profile`: Applies profile defaults while preserving CLI values the user explicitly provided.
 
 ## `core/runtime_config.py`
 
@@ -39,36 +80,13 @@ For end-to-end execution order and module interaction, pair this file with [Arch
 - `select_reference_assignment`: Selects the first camera assignment as the fused reference stream.
 - `build_fused_config`: Creates the config for a fused multi-camera session.
 
-## `runtime_profiles.py`
+## `core/runtime_report.py`
 
-- `RUNTIME_PROFILES`: Defines the app-facing `fastest`, `mid`, and `quality` presets.
-- `apply_runtime_profile`: Applies profile defaults while preserving CLI values the user explicitly provided.
+- `build_runtime_report`: Compiles hardware, CUDA, cuDNN, package, and provider availability into a structured status report.
+- `print_runtime_report`: Formats and displays discovered CUDA versions, providers, and package statuses in the console.
+- `dump_runtime_report_json`: Emits structured JSON diagnostic report.
 
-## `inference/rtmpose.py`
-
-- `ONNXPoseHandRunner`: Runs only the configured body and hand backends. Body can be `yolo` or `mediapipe`; hands can be `onnx` or `mediapipe`; fallback loading is optional.
-- `detect_body`: Returns the existing 17-point body contract, with optional extra heel/toe points when a richer backend provides them.
-- `detect_hand`: Returns a 21-point hand from the configured hand path.
-
-## `runners`
-
-- `runners.single.run_assignment`: Single-camera single-person control loop.
-- `runners.multi_person.run_multi_person_assignment`: Single-camera multi-person control loop.
-- `runners.fused.run_fused_assignments`: Multi-camera control loop for both single-person and multi-person fusion, including optional calibrated triangulation for fused exports.
-- `runners.fused_alignment`: Groups per-camera `PersonTrack` objects into fused people by label first and color similarity second.
-- `runners.common`: Shared export, payload, overlay, bounding-box, and hand-fusion helpers used by multiple runners.
-
-## `utils/bootstrap_*`
-
-- `bootstrap_dependencies`: Orchestrates startup checks and exposes the bootstrap CLI.
-- `bootstrap_state`: Shared constants, module mappings, progress display, and runtime status dataclasses.
-- `bootstrap_paths`: Local vendor path setup, PATH/PYTHONPATH updates, DLL directory registration, and required-file checks.
-- `bootstrap_cuda`: NVIDIA driver, CUDA, and cuDNN discovery plus process environment repair.
-- `bootstrap_packages`: Python module probing, install-plan selection, package installation, and runtime warnings.
-- `hand_tracking`: Hand candidate scoring, wrist/elbow motion prediction, previous-box reuse, and detection/prediction blending.
-- `preview_stream`: Optional launcher bridge that writes the latest processed frame to an app-local JPEG for the native UI preview.
-
-## `config.py`
+## `core/config.py`
 
 ### Types
 
@@ -112,20 +130,29 @@ For end-to-end execution order and module interaction, pair this file with [Arch
 
 ### Types
 
-- `BodyDetection`: Typed dictionary holding a detector id, confidence, box, and body landmarks for one person.
+- `BodyDetection`: Typed dictionary holding detector ID, confidence score, bounding box, and 17 body keypoints for one person.
 
 ### Helpers
 
+- `_cuda_available`: Verifies PyTorch CUDA runtime availability.
+- `_box_from_keypoints`: Computes bounding box `(x1, y1, x2, y2)` from confident keypoints.
 - `_normalize_provider_name`: Strips non-printable characters from provider names, mainly for Windows shell edge cases.
 - `_resolve_provider_names`: Intersects requested ONNX providers with the providers actually available in the current runtime.
 
 ### `ONNXPoseHandRunner`
 
-- `ONNXPoseHandRunner.__init__`: Loads only the configured YOLO, ONNX, and MediaPipe runners needed by the resolved config.
-- `ONNXPoseHandRunner.detect_body`: Convenience wrapper that returns the top detected body or an all-zero fallback; MediaPipe mode also records relative depth that can be exported when single-camera MediaPipe depth is enabled.
+- `ONNXPoseHandRunner.__init__`: Loads only the configured RTMPose, WholeBody, YOLO, ONNX, and MediaPipe backends needed by the resolved config.
+- `ONNXPoseHandRunner._init_rtmpose_body`: Initializes RTMPose Body or PoseTracker through `rtmlib`.
+- `ONNXPoseHandRunner._init_yolo_body`: Loads the Ultralytics YOLO pose model with warmup and half-precision configuration.
+- `ONNXPoseHandRunner._init_mediapipe_body`: Prepares MediaPipe Pose landmark detector.
+- `ONNXPoseHandRunner._init_onnx_hand`: Creates ONNX Runtime inference session with configured execution providers.
+- `ONNXPoseHandRunner._init_mediapipe_hand`: Prepares MediaPipe Hands landmark detector.
+- `ONNXPoseHandRunner.detect_body`: Returns the top detected body or an all-zero fallback; MediaPipe mode also records relative depth that can be exported when single-camera MediaPipe depth is enabled.
 - `ONNXPoseHandRunner._to_numpy`: Converts PyTorch-like or NumPy-like tensor outputs into concrete NumPy arrays.
-- `ONNXPoseHandRunner.detect_bodies`: Runs YOLO prediction/tracker mode, or returns the single available MediaPipe body as a `BodyDetection` record for fast MediaPipe-backed runner/export paths.
+- `ONNXPoseHandRunner.detect_bodies`: Returns all detected persons in the frame via RTMPose tracker, YOLO tracking/prediction, or MediaPipe body wrapper.
 - `ONNXPoseHandRunner.detect_hand`: Crops the hand region, runs the configured hand backend, converts detections into 21 image-space points, and records MediaPipe hand depth when available.
+- `ONNXPoseHandRunner.detect_wholebody`: Executes paired single-pass body and 21-point hand detection using RTMPose WholeBody.
+- `ONNXPoseHandRunner.close`: Releases all model sessions and backend resources.
 
 ## `pipeline/pipeline.py`
 
@@ -138,6 +165,17 @@ For end-to-end execution order and module interaction, pair this file with [Arch
 - `PoseHandPipeline.render_pose`: Draws body and hands on the frame and optionally sends live UDP.
 - `PoseHandPipeline._draw_body`: Draws body skeleton edges and confident body keypoints.
 - `PoseHandPipeline._draw_hands`: Draws hand boxes, hand skeleton edges, and confident hand keypoints.
+
+## `runners`
+
+- `runners.single.run_assignment`: Single-camera single-person control loop.
+- `runners.parallel_single.run_parallel_assignment`: High-throughput chunk-based multiprocessing runner for single-person videos.
+- `runners.multi_person.run_multi_person_assignment`: Single-camera multi-person control loop with person tracking and identity matching.
+- `runners.parallel_multi_person.run_parallel_multi_person_assignment`: Chunk-based multiprocessing runner for accelerating multi-person videos with boundary overlap continuity.
+- `runners.pipeline_parallel.run_pipeline_parallel_assignment`: Live pipeline-parallel execution streaming capture, inference, and rendering across dedicated worker threads.
+- `runners.fused.run_fused_assignments`: Multi-camera synchronized control loop for both single-person and multi-person fusion, including optional calibrated triangulation for fused exports.
+- `runners.fused_alignment`: Groups per-camera `PersonTrack` objects into fused people by label first and color similarity second.
+- `runners.common`: Shared export, payload, overlay, bounding-box, and hand-fusion helpers used by multiple runners.
 
 ## `network/osc_sender.py`
 
@@ -349,30 +387,116 @@ The implementation is split across:
 - `_ground_joint_frames`: Grounds joint frames along the original image-up axis before coordinate conversion.
 - `_z_up_joint_frames`: Swaps normalized axes so export-space becomes Z-up.
 - `_ground_z_axis_frames`: Grounds the final export on the Z axis.
-- `_normalize_export_frames`: Standard normalization pass for single-person frames.
+- `_measure_frame_torso_length`: Measures the Euclidean distance between `HipsRoot` and `Neck` (falling back to shoulder or hip spans if needed).
+- `_smooth_scale_factors`: Applies bidirectional forward-backward exponential moving average smoothing over scale factors across all frames without latency.
+- `_scale_normalize_frames`: Applies distance-invariant scale normalization across a sequence of motion frames so character torso matches the target torso length.
+- `normalize_joint_map_scale`: Scales an isolated single joint map relative to `HipsRoot` to match target torso length.
+- `_normalize_export_frames`: Standard normalization pipeline for single-person frames (Z-up conversion, distance-invariant scale normalization, and foot grounding).
 - `_build_skeleton_metadata`: Serializes the Kinara skeleton hierarchy into metadata.
 - `_compute_rest_joints`: Builds stable per-joint rest positions from median segment offsets across a clip.
 - `_collect_multi_person_joint_tracks`: Expands multi-person frame payloads into per-person joint-track sequences.
-- `_normalize_multi_person_frames`: Applies single-person normalization independently to each person track and rebuilds multi-person frames.
+- `_normalize_multi_person_frames`: Applies scale normalization and grounding independently to each person track and rebuilds multi-person frames.
 - `_build_export_metadata`: Enriches output metadata with skeleton, coordinate system, and rest-joint information.
 
 ### JSON Export
 
-- `_write_motion_json`: Writes the common JSON envelope shared by single-person and multi-person exports.
-- `export_motion_json`: Writes `kinara-motion-json-v1` after optional normalization.
-- `export_multi_person_json`: Writes `kinara-multi-person-json-v1` after optional normalization.
+- `_write_motion_json`: Writes the common JSON envelope shared by single-person and multi-person exports atomically.
+- `export_motion_json`: Writes `kinara-motion-json-v1` after optional distance-invariant scale normalization and grounding.
+- `export_multi_person_json`: Writes `kinara-multi-person-json-v1` after optional per-person scale normalization and grounding.
 
 ### Multi-Person Export Helpers
 
 - `_sanitize_person_label`: Converts person labels into filesystem-safe suffixes.
 - `_empty_joint_map`: Builds an all-zero joint map.
 - `_coerce_frame_index`: Converts frame indices into integers.
-- `export_multi_person_fbx_bundle`: Splits multi-person frames into one per-person FBX export file.
+- `export_multi_person_fbx_bundle`: Splits multi-person frames into one per-person FBX export file with scale normalization.
 
 ### FBX Export
 
 - `_fbx_template_header`: Returns the shared FBX header scaffold.
-- `export_motion_fbx`: Writes a lightweight FBX that stores animation as per-joint local translation curves.
+- `export_motion_fbx`: Writes a lightweight FBX storing animation as per-joint local translation curves, with optional scale normalization and grounding.
+
+## `utils/skeleton.py`
+
+### Types
+
+- `JointSpec`: Immutable dataclass representing a named skeleton joint and its optional parent joint.
+- `Point`: 3D landmark tuple `(x, y, confidence)`.
+- `Box`: 2D bounding box tuple `(x1, y1, x2, y2)`.
+- `JointValue`: Dictionary storing 3D coordinates `x`, `y`, `z`, and confidence.
+- `JointMap`: Typed dictionary mapping joint name to `JointValue`.
+
+### Constants
+
+- `SKELETON`: Canonical tuple of 78 hierarchical joints defining the full body and hand armature.
+- `SKELETON_PARENTS`: Parent lookup dictionary for all joints.
+- `BODY_NAME_TO_INDEX`: Mapping from standard joint name to 17-point COCO body index.
+- `BODY_FOOT_NAME_TO_INDEX`: Mapping from heel and toe joint names to MediaPipe foot landmark indices.
+
+## `utils/payloads.py`
+
+### Types
+
+- `HandPayload`: Typed representation of detected hand bounding box, 21 landmarks, depth values, and synthetic fallback flag.
+- `PersonPayload`: Complete multi-person track state including ID, label, bounding box, body landmarks, hands by side, joint depths, and assembled joint map.
+- `SingleMotionFrame`: Single-person motion timeline frame record with frame index and joint map.
+- `MultiPersonMotionFrame`: Multi-person motion timeline frame record with frame index and list of `PersonPayload` entries.
+
+## `utils/body_geometry.py`
+
+- `derive_foot_points`: Derives foot and toe base points from knee and ankle vector directions, scaling length based on shin segment length.
+
+## `utils/color_profile.py`
+
+### Types
+
+- `ColorProfile`: Dictionary mapping color names to percentage occupancy scores within the person's torso region.
+
+### Helpers
+
+- `color_profile_similarity`: Computes intersection-over-union similarity between two clothing color signatures for persistent identity tracking.
+
+## `utils/prediction.py`
+
+- `predict_points`: Extrapolates landmark coordinates based on constant velocity from previous frames, decaying confidence.
+- `decay_points`: Applies an exponential confidence decay multiplier to missing landmark points.
+- `translate_points`: Shifts landmark points by a 2D vector offset.
+
+## `utils/parallel_sizing.py`
+
+- `is_gpu_backend`: Checks whether execution targets GPU-accelerated providers or devices.
+- `estimate_worker_count`: Calculates optimal worker process count from available physical CPU cores, maximum permitted CPU percentage, and GPU capability.
+- `plan_video_chunks`: Splits video frame sequence into balanced processing chunks with overlap margins for multi-process parallel execution.
+
+## `utils/preview_stream.py`
+
+### `PreviewFrameSink`
+
+- `PreviewFrameSink.__init__`: Sets up frame buffer queue and target preview JPEG path.
+- `PreviewFrameSink.submit`: Enqueues the latest processed frame for background compression.
+- `PreviewFrameSink.close`: Waits for remaining frames and cleans up temporary preview assets.
+
+## `utils/fps.py`
+
+### Classes & Helpers
+
+- `FpsMeter`: Real-time and cumulative FPS tracking with smoothed exponential filtering.
+- `draw_fps_overlay`: Renders throughput badges directly on preview and output frames.
+
+## `utils/logging.py`
+
+- `default_run_log_path`: Generates standardized log file paths with timestamps.
+- `configure_run_log`: Initializes file logging for the current execution.
+- `install_safe_stdio`: Configures UTF-8 encoding on standard output and error streams for Windows consoles.
+
+## `utils/public_paths.py`
+
+- `public_path`: Normalizes absolute filesystem paths to relative `<PROJECT_ROOT>` tokens for public logging and metadata.
+- `redact_value`: Recursively redacts filesystem paths in metadata dictionaries.
+
+## `utils/run_metadata.py`
+
+- `build_run_metadata`: Assembles complete environment, git revision, model configuration, and timing data into standard export metadata.
 
 ## `blender_kinematics/kinara_motion.py`
 
@@ -440,3 +564,16 @@ The implementation is split across:
 
 - `KinaraMotionTests.test_compute_rest_joints_uses_stable_median_offsets`: Verifies rest-joint inference from stable median segment offsets.
 - `KinaraMotionTests.test_held_frames_reuse_last_valid_joint`: Verifies that missing frames reuse the last valid joint data during Blender import preparation.
+
+## `tests/test_core.py`
+
+- `CoreLogicTests`: Comprehensive test suite verifying CLI parsing, module imports, fallback generation, color profiling, distance-invariant scale normalization, smoothing decay, foot lock, and parallel sizing.
+
+## `scripts/build_exe.ps1`
+
+- `Resolve-KinaraPython`: Discovers a valid Python 3.11 executable from environment variables, virtual environments, or `PATH`.
+- Automated PyInstaller compilation pipeline that packages `Kinara.exe` with bundled models, web UI assets, and stripped heavy dependencies.
+
+## `build.cmd`
+
+- Windows batch script providing a zero-configuration shortcut to execute `scripts/build_exe.ps1` with PowerShell ExecutionPolicy Bypass.
