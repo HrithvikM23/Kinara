@@ -1,72 +1,91 @@
 flowchart TD
-    A["Start program<br/>app/main.py"] --> B["Parse command-line arguments"]
-    B --> C["Apply runtime profile"]
-    C --> D["Check and prepare runtime dependencies"]
-    D --> E["Resolve input sources"]
+    A["Start program<br/>Desktop GUI (Kinara.exe) or CLI (app/main.py)"] --> B["Parse CLI args & JSON config"]
+    B --> C["Apply runtime profile<br/>(fastest / mid / quality)"]
+    C --> D["Bootstrap runtime dependencies<br/>(CUDA, cuDNN, packages, models)"]
+    D --> E{"Diagnostics mode?"}
+    E -->|--runtime-check or --dry-run| E1["Validate & print runtime report"]
+    E1 --> Z["Exit"]
 
-    E --> F{"Input found?"}
-    F -->|No| Z["Exit"]
-    F -->|Yes| G{"Calibration mode?"}
+    E -->|Normal run| F["Resolve input sources<br/>(webcam, video files, or prompt)"]
+    F --> G{"Input valid?"}
+    G -->|No| Z
+    G -->|Yes| H{"Calibration mode?<br/>(--calibrate-cameras)"}
 
-    G -->|Yes| H["Calibrate cameras"]
-    H --> I["Save calibration file"]
-    I --> Z
+    H -->|Yes| H1["Run ChArUco camera calibration"]
+    H1 --> H2["Save camera TOML & quality JSON"]
+    H2 --> Z
 
-    G -->|No| J{"How many sources?"}
+    H -->|No| I{"Source count & execution mode"}
 
-    J -->|One source| K["Build pipeline config"]
-    K --> L{"Multi-person enabled?"}
+    %% Single Camera Single Person
+    I -->|1 source, max_people = 1| J["Build single-person pipeline config"]
+    J --> J1{"Execution mode?"}
+    J1 -->|Parallel chunk mode| J2["Run parallel_single chunks<br/>(multiprocess worker pool)"]
+    J1 -->|Live pipeline parallel| J3["Run pipeline_parallel threads<br/>(capture / infer / render)"]
+    J1 -->|Serial standard| K["Initialize single runner loop"]
+    
+    K --> K1["Read video or webcam frame"]
+    K1 --> K2{"Frame available?"}
+    K2 -->|Yes| K3["Detect body landmarks<br/>(RTMPose / WholeBody / YOLO / MediaPipe)"]
+    K3 --> K4["Smooth body points & apply limb constraints"]
+    K4 --> K5["Detect hands on wrist crops<br/>or WholeBody hands"]
+    K5 --> K6["Validate hand anatomy & apply fallbacks"]
+    K6 --> K7["Build canonical 3D skeleton map"]
+    K7 --> K8["Render pose overlay & send live UDP"]
+    K8 --> K9["Save motion frame"]
+    K9 --> K1
 
-    L -->|No| M["Single-person pipeline"]
-    M --> N["Open video or webcam"]
-    N --> O["Read frame"]
-    O --> P{"Frame available?"}
-    P -->|No| Q["Export JSON and FBX"]
-    P -->|Yes| R["Detect body landmarks"]
-    R --> S["Smooth body points"]
-    S --> T["Detect left and right hands"]
-    T --> U["Validate or generate fallback hands"]
-    U --> V["Build skeleton joint map"]
-    V --> W["Render pose overlay"]
-    W --> X["Send UDP packet if enabled"]
-    X --> Y["Save motion frame"]
-    Y --> O
-    Q --> Z
+    %% Single Camera Multi Person
+    I -->|1 source, max_people > 1| L["Build multi-person pipeline config"]
+    L --> L1{"Execution mode?"}
+    L1 -->|Parallel chunk mode| L2["Run parallel_multi_person chunks<br/>(multiprocess workers + track overlap)"]
+    L1 -->|Serial standard| M["Initialize MultiPersonTracker loop"]
 
-    L -->|Yes| AA["Multi-person pipeline"]
-    AA --> AB["Open video or webcam"]
-    AB --> AC["Read frame"]
-    AC --> AD{"Frame available?"}
-    AD -->|No| AE["Export multi-person JSON and FBX"]
-    AD -->|Yes| AF["Detect all people"]
-    AF --> AG["Track people across frames"]
-    AG --> AH["Detect hands for each person"]
-    AH --> AI["Build joint map for each person"]
-    AI --> AJ["Render all people"]
-    AJ --> AK["Send multi-person UDP if enabled"]
-    AK --> AL["Save multi-person frame"]
-    AL --> AC
-    AE --> Z
+    M --> M1["Read video or webcam frame"]
+    M1 --> M2{"Frame available?"}
+    M2 -->|Yes| M3["Detect all persons & associate tracks<br/>(YOLO / RTMPose + ByteTrack/color hints)"]
+    M3 --> M4["Detect hands per person & resolve stolen hands"]
+    M4 --> M5["Build skeleton joint map per person"]
+    M5 --> M6["Render multi-person overlays & send UDP"]
+    M6 --> M7["Save multi-person motion frame"]
+    M7 --> M1
 
-    J -->|Multiple sources| BA["Multi-camera fusion pipeline"]
-    BA --> BB["Open all camera or video sources"]
-    BB --> BC["Read synchronized frames"]
-    BC --> BD{"Frames available?"}
-    BD -->|No| BE["Export fused JSON and FBX"]
-    BD -->|Yes| BF["Detect body and hands in each camera"]
-    BF --> BG["Match people across cameras"]
-    BG --> BH["Fuse body and hand landmarks"]
-    BH --> BI["Estimate depth or triangulate 3D"]
-    BI --> BJ["Build fused skeleton"]
-    BJ --> BK["Render fused output"]
-    BK --> BL["Send fused UDP if enabled"]
-    BL --> BM["Save fused motion frame"]
-    BM --> BC
-    BE --> Z
+    %% Multi Camera Fused
+    I -->|Multiple sources| N["Build multi-camera fused config"]
+    N --> N1["Open synchronized camera sources"]
+    N1 --> N2["Read synchronized frames across views"]
+    N2 --> N3{"Frames available?"}
+    N3 -->|Yes| N4["Detect body and hands in each camera view"]
+    N4 --> N5["Align & match persons across views<br/>(label matching & color similarity)"]
+    N5 --> N6{"Triangulation mode?<br/>(--triangulate-3d)"}
+    N6 -->|Yes| N7["Calibrated 3D triangulation<br/>(via camera TOML)"]
+    N6 -->|No| N8["Cross-view pseudo-depth estimation"]
+    N7 --> N9["Fuse joint maps & render reference frame"]
+    N8 --> N9
+    N9 --> N10["Send live UDP & save fused frame"]
+    N10 --> N2
 
-    classDef default font-size:18px,stroke-width:2px;
-    classDef decision font-size:18px,stroke-width:2px,fill:#fff3cd,stroke:#b7791f;
-    classDef terminal font-size:18px,stroke-width:2px,fill:#e6fffa,stroke:#2c7a7b;
+    %% Export & Post-processing
+    K2 -->|No| EXP["Export normalization & packaging"]
+    J2 --> EXP
+    J3 --> EXP
+    M2 -->|No| EXP
+    L2 --> EXP
+    N3 -->|No| EXP
 
-    class F,G,J,L,P,AD,BD decision;
-    class Z,Q,AE,BE terminal;
+    EXP --> P1["Motion cleanup: velocity spike suppression & foot locking"]
+    P1 --> P2["Coordinate conversion to Z-up export space"]
+    P2 --> P3["Distance-invariant skeleton scale normalization<br/>(zero-lag smoothed torso metric scaling)"]
+    P3 --> P4["Z-axis ground plane alignment (Z=0 foot contact)"]
+    P4 --> P5["Export motion JSON (kinara-motion-json-v1)<br/>& lightweight ASCII FBX 7.4"]
+    P5 --> P6["Ready for Blender import / game engines"]
+    P6 --> Z
+
+    classDef default font-size:16px,stroke-width:2px;
+    classDef decision font-size:16px,stroke-width:2px,fill:#fff3cd,stroke:#b7791f;
+    classDef terminal font-size:16px,stroke-width:2px,fill:#e6fffa,stroke:#2c7a7b;
+    classDef exportStage font-size:16px,stroke-width:2px,fill:#e9d8fd,stroke:#6b46c1;
+
+    class E,G,H,I,J1,K2,L1,M2,N3,N6 decision;
+    class Z terminal;
+    class EXP,P1,P2,P3,P4,P5,P6 exportStage;
