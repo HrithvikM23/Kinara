@@ -27,13 +27,14 @@ Kinara is a local video and webcam motion-tracking pipeline featuring RTMPose CU
 ## Key Features
 
 - **Multi-Backend Pose Tracking**: RTMPose (CUDA-accelerated), RTMPose WholeBody, MediaPipe, and legacy YOLO pose.
-- **Robust Hand Tracking**: ONNX-based YOLO26 hand-pose model (FP16/FP32 variants), wrist-directed crop generation, temporal hold frames, synthetic anatomical fallbacks, and cross-person hand rejection.
+- **Robust Hand Tracking & Anatomical Constraints**: ONNX-based YOLO26 hand-pose model (FP16/FP32 variants), wrist-directed crop generation, temporal hold frames, physiologically calibrated knuckle and finger bounds preventing exponential scale shrinkage, and synthetic anatomical fallbacks.
+- **Distance-Invariant Skeleton Scale Normalization**: Torso-referenced metric scaling (`--target-torso-length 50.0`) with zero-lag bidirectional temporal smoothing across frames and videos. Ensures output character skeletons maintain identical standard humanoid scale and proportions regardless of camera distance or depth motion.
 - **Multi-Person Tracking**: Single-camera multi-person tracking with clothing color identity hints (`--identity person1=black,orange`).
 - **Multi-Camera Fused 3D Reconstruction**: Calibrated multi-camera 3D joint triangulation using ChArUco camera calibration (`.toml`).
 - **Anatomical Foot Locking & Motion Cleanup**: Outlier-resistant ground Y calculation and velocity spike suppression for planted foot contact without sliding.
-- **Blender Motion Export & Import**: Automatic stack-safe JSON & FBX exports with normalized Z-up coordinate frames and Blender armature baking scripts.
+- **Blender Motion Export & Import**: Automatic stack-safe JSON & FBX exports with normalized Z-up coordinate frames, standard humanoid scale, and Blender armature baking scripts.
 - **Live UDP Streaming**: Low-latency UDP streaming of 3D joint maps, person IDs, and frame metadata for downstream game engines (e.g. Unreal Engine 5.4).
-- **Native Desktop App**: Portable Windows launcher (`Kinara.exe`) built with PyWebView and standard control deck interface.
+- **Native Desktop App**: Portable Windows launcher (`Kinara.exe`) built with PyWebView, Microsoft Edge WebView2 auto-installer/check, and standard control deck interface.
 
 ---
 
@@ -194,8 +195,9 @@ The compiled application folder will be placed at `artifacts/windows/Kinara/Kina
 | Calibrated 3D Triangulation | **Complete** | Multi-camera reconstruction with ChArUco TOML calibration |
 | Single & Multi-Person FBX Export | **Complete** | ASCII FBX 7.4 export with 4-tangent float curve specification |
 | Motion JSON Export | **Complete** | Z-up normalized motion dataset with Blender rig metadata |
+| Skeleton Scale Normalization | **Complete** | Torso-referenced distance-invariant scaling across frames & videos |
 | Live UDP Streaming | **Complete** | Configurable host/port JSON streaming for Unreal receivers |
-| Native Windows Desktop App | **Complete** | Standalone PyWebView launcher (`Kinara.exe`) |
+| Native Windows Desktop App | **Complete** | Standalone PyWebView launcher (`Kinara.exe`) with WebView2 auto-installer |
 
 ---
 

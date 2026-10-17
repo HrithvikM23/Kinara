@@ -80,6 +80,13 @@ Thumbs.db
 .ipynb_checkpoints/
 
 # ----------------------
+# Private notes / analysis (never commit)
+# ----------------------
+.notes/
+analysis.md
+change.md
+
+# ----------------------
 # Temporary files
 # ----------------------
 *.tmp
