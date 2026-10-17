@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Kinara Documentation
+    url: https://github.com/HrithvikM23/Kinara/tree/main/docs
+    about: Please consult the documentation and architecture walkthroughs before submitting an issue.
