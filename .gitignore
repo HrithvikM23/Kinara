@@ -1,4 +1,10 @@
 # ----------------------
+# Rust build artifacts
+# ----------------------
+target/
+kinara.config.json
+
+# ----------------------
 # Python cache / builds
 # ----------------------
 .kinara/
@@ -58,7 +64,7 @@ charuco_*.png
 opencv_current_charuco_*.png
 
 # ----------------------
-# Model weights (VERY IMPORTANT)
+# Model weights
 # ----------------------
 *.pth
 *.pt
@@ -85,6 +91,7 @@ Thumbs.db
 .notes/
 analysis.md
 change.md
+ref/
 
 # ----------------------
 # Temporary files
@@ -96,3 +103,5 @@ change.md
 # CUDA / Torch artifacts (optional)
 # ----------------------
 *.cuda
+
+

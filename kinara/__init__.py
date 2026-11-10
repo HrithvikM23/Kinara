@@ -1,1 +1,0 @@
-"""Kinara application package."""
