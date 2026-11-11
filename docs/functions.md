@@ -88,7 +88,7 @@ This document provides a comprehensive technical index of all functions within t
 * **Responsibility**: Constrains a 1-DOF joint (elbow, knee, PIP, DIP) to pure planar flexion, preventing lateral bend and backward hyperextension.
 * **Inputs**: Parent joint position, middle hinge position, proposed child position, (min_flexion, max_flexion) angles.
 * **Outputs**: Corrected child joint position.
-* **Internal Logic**: Projects child vector onto the primary hinge plane; clamps angle between $(\text{middle} - \text{parent})$ and $(\text{child} - \text{middle})$ to $[0^\circ, \text{max\_flexion}]$; re-scales to invariant bone length.
+* **Internal Logic**: Projects child vector onto the primary hinge plane; clamps angle between $(\text{middle} - \text{parent})$ and $(\text{child} - \text{middle})$ to $[0^\circ, \theta_{\max}]$; re-scales to invariant bone length.
 
 ### `BodyIKSolver::enforce_segment_lengths(&mut self, body: &mut BodyKeypointSet)`
 * **Responsibility**: Prevents bones (femur, tibia, humerus, radius) from shrinking or stretching during perspective changes.
