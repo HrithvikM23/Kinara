@@ -1,0 +1,96 @@
+```mermaid
+flowchart TD
+    %% Kinara End-to-End Program Flow Architecture
+    
+    subgraph INGEST ["1. Video Ingestion & Decoding"]
+        SRC_BODY["Primary Body Stream<br/>(1080p / 2K / 4K MP4, MKV, or Webcam)"]
+        SRC_FACE["Optional Face/Headrig Stream<br/>(Synchronized Facial MP4)"]
+        CAP_SESSION["Video Capture Session<br/>(OpenCV / Native Hardware Decoder)"]
+        
+        SRC_BODY --> CAP_SESSION
+        SRC_FACE -.-> CAP_SESSION
+        CAP_SESSION --> FRAME_RAW["Uncompressed Native Frame Buffer<br/>(Full 1:1 Pixel Matrix)"]
+    end
+
+    subgraph PREPROC ["2. Dual-Scale Preprocessing"]
+        FRAME_RAW --> PYR_BODY["Downscaled Proxy Buffer<br/>(640x640 / 384x384 for Fast Body Pose)"]
+        FRAME_RAW --> PYR_NATIVE["Native 1:1 High-Res ROI Buffer<br/>(Preserves Fine Finger Boundary Edges)"]
+    end
+
+    subgraph INFERENCE ["3. Deep Neural Inference"]
+        PYR_BODY --> DET_BODY["Body Pose Estimator<br/>(DWPose / WholeBody / RTMPose ONNX)"]
+        DET_BODY --> PTS_BODY_RAW["Raw 17/133 Keypoint Heatmaps & Coordinates"]
+        
+        PTS_BODY_RAW --> FOREARM_VEC["Forearm Vector Computation<br/>(Elbow-to-Wrist Orientation & Hand Scale)"]
+        FOREARM_VEC & PYR_NATIVE --> CROP_HAND["Adaptive Wrist-Centered Crop<br/>(Direction-Aligned Square Bounding Box)"]
+        
+        CROP_HAND --> DET_HAND["3D Hand Mesh Recovery<br/>(WiLoR / MANO / Hand Landmark ONNX)"]
+        DET_HAND --> PTS_HAND_RAW["21 Raw Hand Keypoints per Side<br/>(Wrist, Thumb, Index, Middle, Ring, Pinky)"]
+    end
+
+    subgraph TRACKING ["4. Tracking & Re-Identification (Optional)"]
+        PTS_BODY_RAW & PTS_HAND_RAW --> TRACK_MGR{"Multi-Person Tracking?"}
+        TRACK_MGR -->|Yes| BYTETRACK["Track Association Engine<br/>(ByteTrack Kalman Velocity + Torso Color Profile)"]
+        BYTETRACK --> RESOLVE_STEAL["Cross-Person Hand Disambiguation<br/>(Wrist Proximity & Collision Penalty)"]
+        TRACK_MGR -->|No / Single Subject| SOLVER_INGEST["Direct Solver Ingest"]
+        RESOLVE_STEAL --> SOLVER_INGEST
+    end
+
+    subgraph BIOMECH_IK ["5. Biomechanical Inverse Kinematics (IK) Solver"]
+        SOLVER_INGEST --> BODY_IK["Body Skeletal Constraints"]
+        BODY_IK --> B_LEN["Rigid Limb Segment Invariance<br/>(Humerus, Forearm, Thigh, Shin Length Locking)"]
+        BODY_IK --> B_HINGE["1-DOF Planar Hinge Enforcer<br/>(Knees & Elbows: Zero Backwards Hyperextension)"]
+        
+        SOLVER_INGEST --> HAND_IK["Hand & Finger Anatomical IK Engine"]
+        HAND_IK --> H_TENDON["DIP-PIP Tendon Coupling Ratio<br/>(θ_DIP = 0.67 * θ_PIP: Lock Tip to Middle Joint)"]
+        HAND_IK --> H_CLMAP["Dynamic Fist Abduction Clamping<br/>(Metacarpal Lateral Splay -> 0 as Knuckles Flex)"]
+        HAND_IK --> H_HINGE["1-DOF Knuckle Limiters<br/>(PIP/DIP: 0° Lateral Deviation, 0° Backward Hyperextension)"]
+        HAND_IK --> H_LANE["Collision Lane & Radial Guard<br/>(Prevent Inter-Finger Intersection & Wrist Over-Extension)"]
+        
+        B_LEN & B_HINGE & H_TENDON & H_CLMAP & H_HINGE & H_LANE --> ANAT_RIG["Anatomically Constrained 78-Joint Rigid Skeleton"]
+    end
+
+    subgraph STABILIZE ["6. Temporal Filtering & Motion Stabilization"]
+        ANAT_RIG --> FLT_SMOOTH["Dual-Stage Landmark Filter<br/>(OneEuro / Exponential Moving Average on Positions)"]
+        FLT_SMOOTH --> ROT_SLERP["Spherical Linear Interpolation (SLERP)<br/>(Filter Joint Quaternions, Never Cartesian Points)"]
+        ROT_SLERP --> FOOT_LOCK["Ground Contact & Foot Lock Solver<br/>(Zero-Velocity Thresholding on Floor Impact)"]
+    end
+
+    subgraph NORMALIZATION ["7. Coordinate Space & Metric Normalization"]
+        FOOT_LOCK --> COORD_TRANS["Camera to Blender Space Transform<br/>(X_world = X_cam, Y_world = Z_cam, Z_world = -Y_cam)"]
+        COORD_TRANS --> SCALE_NORM["Distance-Invariant Scale Normalization<br/>(Bidirectional EMA Torso Metric Scaling: HipsRoot-to-Neck)"]
+        SCALE_NORM --> GROUND_ALIGN["Ground Plane Alignment<br/>(Zero-Offset Lowest Foot Contact to Z = 0.0)"]
+    end
+
+    subgraph EXPORT ["8. Motion Export & Engine Interoperability"]
+        GROUND_ALIGN --> EXP_ROUTER{"Export Targets"}
+        
+        EXP_ROUTER -->|Native Blender Pipeline| EXP_JSON["Kinara Motion JSON (kinara-motion-json-v1)<br/>(Joint Trajectories + Skeleton Metadata + Rest Offsets)"]
+        EXP_JSON --> BLENDER_PY["Blender Python Importer (import_kinara_motion.py)<br/>(Armature Generation, Rest Bone Rigging, Animation Baking)"]
+        
+        EXP_ROUTER -->|Universal DCC / Game Engines| EXP_FBX["ASCII FBX 7.4 Document<br/>(Hierarchical LimbNodes, Bind Pose, Translation Curves)"]
+        
+        EXP_ROUTER -->|Real-Time Network Stream| EXP_UDP["OSC / UDP Live Stream<br/>(Sub-10ms Low Latency Pose Stream for Unreal Engine)"]
+    end
+
+    %% Node Styling
+    classDef ingestStage fill:#1e293b,stroke:#3b82f6,stroke-width:2px,color:#f8fafc;
+    classDef preprocStage fill:#0f172a,stroke:#6366f1,stroke-width:2px,color:#f8fafc;
+    classDef inferStage fill:#1e1b4b,stroke:#8b5cf6,stroke-width:2px,color:#f8fafc;
+    classDef trackStage fill:#312e81,stroke:#a855f7,stroke-width:2px,color:#f8fafc;
+    classDef ikStage fill:#064e3b,stroke:#10b981,stroke-width:2px,color:#f8fafc;
+    classDef stabStage fill:#134e4a,stroke:#14b8a6,stroke-width:2px,color:#f8fafc;
+    classDef normStage fill:#365314,stroke:#84cc16,stroke-width:2px,color:#f8fafc;
+    classDef exportStage fill:#701a75,stroke:#ec4899,stroke-width:2px,color:#f8fafc;
+    classDef decisionNode fill:#7c2d12,stroke:#f97316,stroke-width:2px,color:#f8fafc;
+
+    class SRC_BODY,SRC_FACE,CAP_SESSION,FRAME_RAW ingestStage;
+    class PYR_BODY,PYR_NATIVE preprocStage;
+    class DET_BODY,PTS_BODY_RAW,FOREARM_VEC,CROP_HAND,DET_HAND,PTS_HAND_RAW inferStage;
+    class BYTETRACK,RESOLVE_STEAL,SOLVER_INGEST trackStage;
+    class BODY_IK,B_LEN,B_HINGE,HAND_IK,H_TENDON,H_CLMAP,H_HINGE,H_LANE,ANAT_RIG ikStage;
+    class FLT_SMOOTH,ROT_SLERP,FOOT_LOCK stabStage;
+    class COORD_TRANS,SCALE_NORM,GROUND_ALIGN normStage;
+    class EXP_JSON,BLENDER_PY,EXP_FBX,EXP_UDP exportStage;
+    class TRACK_MGR,EXP_ROUTER decisionNode;
+```
