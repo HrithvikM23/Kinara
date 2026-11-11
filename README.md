@@ -9,7 +9,7 @@
 [![GPU Acceleration](https://img.shields.io/badge/Inference-CUDA_%7C_DirectML_%7C_CPU-76b900?style=flat-square&logo=nvidia&logoColor=white)](https://developer.nvidia.com/cuda-zone)
 [![Blender Ready](https://img.shields.io/badge/DCC_Target-Blender_4.x+-f5792a?style=flat-square&logo=blender&logoColor=white)](https://www.blender.org)
 [![Rig Architecture](https://img.shields.io/badge/Skeleton-78--Joint_Armature-6366f1?style=flat-square)](./docs/ik_and_skeleton.md)
-[![License](https://img.shields.io/badge/License-MIT-3b82f6?style=flat-square)](./LICENSE.md)
+[![License](https://img.shields.io/badge/License-Non--Commercial-3b82f6?style=flat-square)](./LICENSE.md)
 
 <p align="center">
   <b>Kinara</b> is a markerless motion capture engine designed to extract 3D skeletal and finger-articulated animation from standard video feeds.<br/>
