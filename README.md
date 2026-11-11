@@ -205,4 +205,4 @@ Kinara/
 
 ## 📄 License & Attribution
 
-Kinara is licensed under the [Kinara Non-Commercial Personal Use License](./LICENSE.md). It is source-available for personal, educational, academic, and non-commercial use only; commercial use is not permitted. Built for open biomechanics, markerless motion tracking, and real-time graphics pipelines.
+Kinara is licensed under the [Kinara Commercial-Notification License](./LICENSE.md). It is free for personal, educational, and academic use. Commercial use is permitted, but you must notify the author before you begin. Built for open biomechanics, markerless motion tracking, and real-time graphics pipelines.
