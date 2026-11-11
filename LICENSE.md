@@ -7,13 +7,20 @@ of this software and associated documentation files (the "Software"), to use,
 copy, modify, and distribute the Software for personal, educational, academic,
 or non-commercial purposes only, subject to the following conditions:
 
-1. NON-COMMERCIAL RESTRICTION
-   The Software shall not be used, in whole or in part, for any commercial
-   purpose. "Commercial purpose" means any activity intended for or directed
-   toward commercial advantage or monetary compensation, including but not
-   limited to: selling the Software or derivative works, incorporating it
-   into a paid product or service, using it to generate revenue, or deploying
-   it in any commercial production pipeline operated for profit.
+1. COMMERCIAL USE NOTIFICATION
+   Personal, educational, academic, and other non-commercial use requires
+   no notice. Commercial use is permitted only if, before the first
+   commercial use, you notify the copyright holder in writing at
+   hrithvikmani@gmail.com with:
+     (a) your name or organization,
+     (b) a brief description of the intended commercial use, and
+     (c) the product, service, or pipeline in which the Software is used.
+   "Commercial use" means any activity intended for or directed toward
+   commercial advantage or monetary compensation, including selling the
+   Software or derivative works, incorporating it into a paid product or
+   service, using it to generate revenue, or deploying it in any
+   commercial production pipeline operated for profit. Notification does
+   not transfer ownership or grant any rights beyond this license.
 
 2. ATTRIBUTION
    The above copyright notice and this permission notice shall be included
