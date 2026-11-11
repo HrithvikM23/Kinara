@@ -205,5 +205,4 @@ Kinara/
 
 ## 📄 License & Attribution
 
-Kinara is licensed under the **[MIT License](./LICENSE.md)**.
-Built for open biomechanics, markerless motion tracking, and real-time graphics pipelines.
+Kinara is licensed under the [Kinara Non-Commercial Personal Use License](./LICENSE.md). It is source-available for personal, educational, academic, and non-commercial use only; commercial use is not permitted. Built for open biomechanics, markerless motion tracking, and real-time graphics pipelines.
