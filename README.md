@@ -203,4 +203,4 @@ The compiled application folder will be placed at `artifacts/windows/Kinara/Kina
 
 ## License
 
-Kinara is licensed under the [MIT License](./LICENSE.md).
+Kinara is licensed under the [Kinara Commercial-Notification License](./LICENSE.md). It is free for personal, educational, and academic use. Commercial use is permitted, but you must notify the author before you begin. Built for open biomechanics, markerless motion tracking, and real-time graphics pipelines.
