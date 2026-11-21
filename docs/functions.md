@@ -207,3 +207,24 @@ This document provides a comprehensive technical index of all functions within t
 * **Responsibility**: Renders the immediate-mode native desktop studio GUI using `eframe` / `egui`.
 * **Inputs**: egui render context, desktop window frame.
 * **Outputs**: Interactive user interface updating model selection, source file pickers, real-time pose preview viewports, and processing progress bars.
+
+### `TimelineClip::set_trim(&mut self, in_frame: usize, out_frame: usize) -> Result<(), &'static str>`
+* **Responsibility**: Sets non-destructive trim start and end frame bounds on a video clip.
+* **Inputs**: In-point frame index, out-point frame index.
+* **Outputs**: Unit `Result<()>`.
+
+### `TimelineEditor::add_clip(&mut self, path: impl AsRef<Path>, fps: f64, total_frames: usize) -> u64`
+* **Responsibility**: Ingests a drag-and-dropped or loaded video clip into the multi-track timeline.
+* **Inputs**: Path to video file, clip FPS, total frame count.
+* **Outputs**: Unique 64-bit clip identifier.
+
+### `TimelineEditor::cut_clip(&mut self, clip_id: u64, cut_offset: usize) -> Result<u64, &'static str>`
+* **Responsibility**: Splits an active video clip at the playhead into two independent sequential clips.
+* **Inputs**: Target clip ID, frame offset from the clip's in-point.
+* **Outputs**: ID of the newly spawned second half clip.
+
+### `TimelineEditor::merge_clips(&mut self, first_id: u64, second_id: u64) -> Result<(), &'static str>`
+* **Responsibility**: Reconnects two contiguous clips that share the same source file into one unified clip.
+* **Inputs**: First clip ID, second clip ID.
+* **Outputs**: Unit `Result<()>`.
+

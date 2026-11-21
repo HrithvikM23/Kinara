@@ -31,6 +31,7 @@ venv/
 .vendor_py*/
 .ultralytics/
 .venv/
+venv-base/
 
 # ----------------------
 # Logs & runtime outputs
@@ -86,12 +87,14 @@ Thumbs.db
 .ipynb_checkpoints/
 
 # ----------------------
-# Private notes / analysis (never commit)
+# Private notes / analysis 
 # ----------------------
 .notes/
 analysis.md
 change.md
 ref/
+AGENTS.md
+agent.md
 
 # ----------------------
 # Temporary files
@@ -100,7 +103,7 @@ ref/
 *.cache
 
 # ----------------------
-# CUDA / Torch artifacts (optional)
+# CUDA / Torch artifacts 
 # ----------------------
 *.cuda
 
