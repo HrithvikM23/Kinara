@@ -658,7 +658,7 @@ mod tests {
             target_w: 100,
             target_h: 100,
         };
-
+        
         let pts = decode_simcc_keypoints(&simcc_x, &simcc_y, 1, 2.0, &transform);
         assert_eq!(pts.len(), 1);
         assert!(pts[0].x >= 25);
