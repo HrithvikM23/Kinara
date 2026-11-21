@@ -375,9 +375,8 @@ mod tests {
     use crate::export::canonical::{build_canonical_joint_map, HandsPair};
     use crate::export::coords::MotionFrame;
     use crate::skeleton::Point;
-    use crate::solver::body_constraints::BodyKeypoints;
 
-    fn dummy_body_keypoints() -> BodyKeypoints {
+    fn dummy_body_keypoints() -> Vec<Point> {
         let mut pts = vec![Point::new(0, 0, 0.9); 17];
         pts[5] = Point::new(100, 100, 0.9);
         pts[6] = Point::new(200, 100, 0.9);
@@ -391,7 +390,7 @@ mod tests {
         pts[14] = Point::new(180, 320, 0.9);
         pts[15] = Point::new(120, 380, 0.9);
         pts[16] = Point::new(180, 380, 0.9);
-        BodyKeypoints::new(pts)
+        pts
     }
 
     #[test]

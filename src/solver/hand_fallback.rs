@@ -4,7 +4,6 @@
 use crate::skeleton::Point;
 use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// Normalized 2D hand landmark template offsets relative to the wrist (index 0).
 /// Coordinates are (lateral, forward) relative to forearm orientation.
@@ -31,8 +30,6 @@ pub const DEFAULT_HAND_TEMPLATE: [(f32, f32); 21] = [
     (0.56, 0.64),   // 19: Pinky DIP
     (0.62, 0.82),   // 20: Pinky Tip
 ];
-
-static TELEMETRY: std::sync::Mutex<Option<HashMap<String, usize>>> = std::sync::Mutex::new(None);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum HandSide {
@@ -106,16 +103,10 @@ pub fn is_hand_detection_valid(
     wrist_point: Point,
     elbow_point: Point,
     config: &HandValidationConfig,
-    record_telemetry: bool,
 ) -> bool {
     let points = match hand_points {
         Some(p) if p.len() == 21 => p,
-        _ => {
-            if record_telemetry {
-                record_hand_rejection("missing_points");
-            }
-            return false;
-        }
+        _ => return false,
     };
 
     let wrist_xy = (wrist_point.x as f32, wrist_point.y as f32);
@@ -131,9 +122,6 @@ pub fn is_hand_detection_valid(
     let max_wrist_offset = (config.hand_box_min_size * 0.38)
         .max(forearm_len * config.hand_wrist_max_offset_scale * 1.15);
     if wrist_offset > max_wrist_offset {
-        if record_telemetry {
-            record_hand_rejection("wrist_offset");
-        }
         return false;
     }
 
@@ -141,9 +129,6 @@ pub fn is_hand_detection_valid(
     let threshold = config.hand_kp_threshold * 0.5;
     let valid_count = points.iter().filter(|p| p.confidence > threshold).count();
     if valid_count < config.hand_min_valid_points {
-        if record_telemetry {
-            record_hand_rejection("valid_points");
-        }
         return false;
     }
 
@@ -154,9 +139,6 @@ pub fn is_hand_detection_valid(
         .fold(0.0_f32, f32::max);
     let max_allowed_radial = (forearm_len * 2.75).max(config.hand_box_min_size * 1.40);
     if max_radial > max_allowed_radial {
-        if record_telemetry {
-            record_hand_rejection("radial_distance");
-        }
         return false;
     }
 
@@ -173,26 +155,10 @@ pub fn is_hand_detection_valid(
     let min_palm = forearm_len * 0.035;
     let max_palm = (forearm_len * 1.85).max(config.hand_box_min_size * 0.55);
     if avg_palm_dist < min_palm || avg_palm_dist > max_palm {
-        if record_telemetry {
-            record_hand_rejection("palm_distance");
-        }
         return false;
     }
 
     true
-}
-
-/// Logs a hand rejection reason to the internal telemetry counter.
-pub fn record_hand_rejection(reason: &str) {
-    let mut guard = TELEMETRY.lock().unwrap_or_else(|e| e.into_inner());
-    let map = guard.get_or_insert_with(HashMap::new);
-    *map.entry(reason.to_string()).or_insert(0) += 1;
-}
-
-/// Extracts and clears accumulated telemetry rejection counts.
-pub fn pop_hand_rejection_telemetry() -> HashMap<String, usize> {
-    let mut guard = TELEMETRY.lock().unwrap_or_else(|e| e.into_inner());
-    guard.take().unwrap_or_default()
 }
 
 /// Determines whether a hand detection has enough confidence to warrant attempting IK constraints.
@@ -298,21 +264,5 @@ mod tests {
         let hand = generate_fallback_hand(wrist, dir, 50.0);
         assert_eq!(hand.len(), 21);
         assert_eq!(hand[0], wrist);
-    }
-
-    #[test]
-    fn test_telemetry_recording() {
-        pop_hand_rejection_telemetry(); // Clear
-        record_hand_rejection("test_reason");
-        record_hand_rejection("test_reason");
-        record_hand_rejection("another_reason");
-
-        let stats = pop_hand_rejection_telemetry();
-        assert_eq!(stats.get("test_reason"), Some(&2));
-        assert_eq!(stats.get("another_reason"), Some(&1));
-
-        // After pop, should be empty
-        let empty = pop_hand_rejection_telemetry();
-        assert!(empty.is_empty());
     }
 }

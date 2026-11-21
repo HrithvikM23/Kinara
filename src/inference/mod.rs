@@ -2,7 +2,6 @@
 
 use anyhow::Context;
 use crate::skeleton::Point;
-use crate::solver::body_constraints::BodyKeypoints;
 use glam::{Vec2, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -383,7 +382,7 @@ impl BodyPoseEstimator {
         })
     }
 
-    pub fn detect_body(&mut self, frame: &image::RgbImage) -> anyhow::Result<BodyKeypoints> {
+    pub fn detect_body(&mut self, frame: &image::RgbImage) -> anyhow::Result<Vec<Point>> {
         if let Some(ref session_arc) = self.session {
             if let Ok(mut session) = session_arc.lock() {
                 let (tensor_data, transform) = letterbox_image(frame, self.input_w, self.input_h);
@@ -400,7 +399,7 @@ impl BodyPoseEstimator {
                         let num_kps = shape0[1] as usize;
                         let kps = decode_simcc_keypoints(data0, data1, num_kps, 2.0, &transform);
                         if !kps.is_empty() {
-                            return Ok(BodyKeypoints::new(kps));
+                            return Ok(kps);
                         }
                     }
                 }
@@ -415,7 +414,7 @@ impl BodyPoseEstimator {
                         let map_w = shape[3] as usize;
                         let kps = decode_heatmaps(data, num_kps, map_w, map_h, &transform);
                         if !kps.is_empty() {
-                            return Ok(BodyKeypoints::new(kps));
+                            return Ok(kps);
                         }
                     } else if shape.len() == 3 {
                         let num_kps = shape[1] as usize;
@@ -429,7 +428,7 @@ impl BodyPoseEstimator {
                                 let (ox, oy) = transform.unletterbox(x, y);
                                 kps.push(Point::new(ox.round() as i32, oy.round() as i32, conf));
                             }
-                            return Ok(BodyKeypoints::new(kps));
+                            return Ok(kps);
                         }
                     }
                 }
@@ -441,7 +440,7 @@ impl BodyPoseEstimator {
         let cx = (w / 2) as i32;
         let cy = (h / 2) as i32;
         let points = (0..17).map(|_| Point::new(cx, cy, 0.9)).collect();
-        Ok(BodyKeypoints::new(points))
+        Ok(points)
     }
 }
 
@@ -604,9 +603,9 @@ mod tests {
 
         let frame = image::RgbImage::new(640, 480);
         let body_kps = body_est.detect_body(&frame).expect("Detection failed");
-        assert_eq!(body_kps.points.len(), 17);
-        assert_eq!(body_kps.points[0].x, 320);
-        assert_eq!(body_kps.points[0].y, 240);
+        assert_eq!(body_kps.len(), 17);
+        assert_eq!(body_kps[0].x, 320);
+        assert_eq!(body_kps[0].y, 240);
 
         let mut hand_est = HandMeshEstimator::new(
             Path::new("nonexistent/rtmpose_hand.onnx"),

@@ -5,7 +5,6 @@ use crate::skeleton::{
     body_foot_name_to_index, body_name_to_index, hand_name_to_index, CoordinateSystemConfig,
     JointMap, JointValue, Point, FACE_POINT_INDICES, SKELETON,
 };
-use crate::solver::body_constraints::BodyKeypoints;
 use crate::solver::body_geometry::derive_foot_points;
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
@@ -88,7 +87,7 @@ impl MultiPersonFrame {
 
 /// Assembles detected full-body and hand landmarks into the canonical 60-joint dictionary.
 pub fn build_canonical_joint_map(
-    body: &BodyKeypoints,
+    body: &[Point],
     hands: &HandsPair,
     joint_depths: Option<&HashMap<String, f32>>,
 ) -> JointMap {
@@ -100,7 +99,7 @@ pub fn build_canonical_joint_map(
     let default_depths = HashMap::new();
     let depths = joint_depths.unwrap_or(&default_depths);
 
-    let body_pts = &body.points;
+    let body_pts = body;
     if body_pts.len() < 17 {
         return map;
     }
@@ -399,8 +398,14 @@ pub fn compute_rest_pose_joints(frames: &[MotionFrame]) -> RestJointOffsets {
 }
 
 pub(crate) fn median(vals: &mut [f32]) -> f32 {
-    vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    vals[vals.len() / 2]
+    if vals.is_empty() {
+        return 0.0;
+    }
+    let mid = vals.len() / 2;
+    let (_, &mut med, _) = vals.select_nth_unstable_by(mid, |a, b| {
+        a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    med
 }
 
 #[cfg(test)]
@@ -408,7 +413,7 @@ mod tests {
     use super::*;
     use crate::skeleton::Point;
 
-    fn dummy_body_keypoints() -> BodyKeypoints {
+    fn dummy_body_keypoints() -> Vec<Point> {
         let mut pts = vec![Point::new(0, 0, 0.9); 17];
         pts[5] = Point::new(100, 100, 0.9);
         pts[6] = Point::new(200, 100, 0.9);
@@ -422,7 +427,7 @@ mod tests {
         pts[14] = Point::new(180, 320, 0.9);
         pts[15] = Point::new(120, 380, 0.9);
         pts[16] = Point::new(180, 380, 0.9);
-        BodyKeypoints::new(pts)
+        pts
     }
 
     #[test]

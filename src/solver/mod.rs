@@ -8,7 +8,7 @@ pub mod prediction;
 
 pub use body_constraints::*;
 pub use body_geometry::*;
-pub use filter::{OneEuroFilter, QuaternionFilter};
+pub use filter::{OneEuroFilter, quaternion_slerp};
 pub use foot_lock::*;
 pub use hand_constraints::*;
 pub use hand_fallback::*;

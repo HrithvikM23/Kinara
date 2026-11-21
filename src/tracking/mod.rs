@@ -58,13 +58,10 @@ pub fn compute_bbox_iou(a: BoundingBox, b: BoundingBox) -> f32 {
     inter_area as f32 / union_area as f32
 }
 
-/// Torso color profiling utility for clothing-based actor re-identification.
-pub struct TorsoColorProfiler;
-
-impl TorsoColorProfiler {
-    /// Extracts a 16-bin normalized Hue histogram from the torso region of an image.
-    pub fn extract_histogram(frame: &image::RgbImage, torso: BoundingBox) -> ColorHistogram {
-        let (width, height) = frame.dimensions();
+/// Extracts a 16-bin normalized Hue histogram from the torso region of an image
+/// for clothing-based actor re-identification.
+pub fn extract_torso_histogram(frame: &image::RgbImage, torso: BoundingBox) -> ColorHistogram {
+    let (width, height) = frame.dimensions();
         let x1 = torso.x1.clamp(0, width as i32) as u32;
         let y1 = torso.y1.clamp(0, height as i32) as u32;
         let x2 = torso.x2.clamp(0, width as i32) as u32;
@@ -120,7 +117,6 @@ impl TorsoColorProfiler {
         }
 
         ColorHistogram { bins }
-    }
 }
 
 /// Measures color profile similarity via histogram intersection score in range [0.0, 1.0].
@@ -342,7 +338,7 @@ impl MultiPersonTracker {
         // Extract color histogram if not already provided
         for det in &mut detection_list {
             if det.color_hist.is_none() {
-                det.color_hist = Some(TorsoColorProfiler::extract_histogram(frame, det.box_));
+                det.color_hist = Some(extract_torso_histogram(frame, det.box_));
             }
         }
 

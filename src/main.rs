@@ -9,7 +9,6 @@ use kinara::export::{
     export_motion_fbx, export_motion_json, normalize_sequence_scale, ClipMetadata, HandsPair,
     MotionFrame,
 };
-use kinara::gui::{CreationContext, GuiContext, GuiFrame, KinaraApp};
 use kinara::inference::{
     compute_forearm_vector, extract_hand_crop, BodyPoseEstimator, ExecutionBackend,
     HandMeshEstimator,
@@ -92,11 +91,6 @@ pub enum Commands {
     Info,
 }
 
-/// Parses CLI arguments from environment using clap.
-pub fn parse_cli_arguments() -> CliArgs {
-    CliArgs::parse()
-}
-
 /// Execution session managing inference models, biomechanical IK solvers, and temporal filters.
 pub struct PipelineSession {
     pub config: PipelineConfig,
@@ -155,10 +149,10 @@ impl PipelineSession {
         }
 
         let mut hands = HandsPair::default();
-        if self.config.hand_ik_enabled && body_kps.points.len() >= 11 {
+        if self.config.hand_ik_enabled && body_kps.len() >= 11 {
             // Left hand (wrist: 9, elbow: 7)
-            let lw = Vec2::new(body_kps.points[9].x as f32, body_kps.points[9].y as f32);
-            let le = Vec2::new(body_kps.points[7].x as f32, body_kps.points[7].y as f32);
+            let lw = Vec2::new(body_kps[9].x as f32, body_kps[9].y as f32);
+            let le = Vec2::new(body_kps[7].x as f32, body_kps[7].y as f32);
             let (ldir, llen) = compute_forearm_vector(le, lw);
             if let Some(crop) = extract_hand_crop(frame, lw, ldir, llen) {
                 if let Ok(raw_hand) = self.hand_estimator.detect_hand(&crop) {
@@ -168,8 +162,8 @@ impl PipelineSession {
             }
 
             // Right hand (wrist: 10, elbow: 8)
-            let rw = Vec2::new(body_kps.points[10].x as f32, body_kps.points[10].y as f32);
-            let re = Vec2::new(body_kps.points[8].x as f32, body_kps.points[8].y as f32);
+            let rw = Vec2::new(body_kps[10].x as f32, body_kps[10].y as f32);
+            let re = Vec2::new(body_kps[8].x as f32, body_kps[8].y as f32);
             let (rdir, rlen) = compute_forearm_vector(re, rw);
             if let Some(crop) = extract_hand_crop(frame, rw, rdir, rlen) {
                 if let Ok(raw_hand) = self.hand_estimator.detect_hand(&crop) {
@@ -276,7 +270,7 @@ pub fn run_cli_pipeline(config: PipelineConfig) -> anyhow::Result<()> {
 }
 
 fn main() -> anyhow::Result<()> {
-    let args = parse_cli_arguments();
+    let args = CliArgs::parse();
 
     let cfg_path = args.config.unwrap_or_else(|| PathBuf::from("kinara.config.json"));
     let mut config = PipelineConfig::load_or_default(&cfg_path);
@@ -414,16 +408,10 @@ fn main() -> anyhow::Result<()> {
             println!("Timeline active clip id: {}, total clips: {}", clip_id, editor.clips.len());
         }
         Some(Commands::Studio { input }) => {
-            let cc = CreationContext::default();
-            let mut app = KinaraApp::new(&cc, config);
+            println!("Kinara Desktop Studio GUI is scheduled for Phase 2 desktop windowing.");
             if let Some(inp) = input {
-                let _ = app.open_source(&inp);
+                println!("Target input source: {}", inp);
             }
-            println!("Kinara Desktop Studio Deck launched.");
-            let ctx = GuiContext::default();
-            let mut frame = GuiFrame::default();
-            app.update(&ctx, &mut frame);
-            println!("Studio deck initialized: {}", app.status_message);
         }
         Some(Commands::Info) => {
             println!("Kinara Markerless Motion Capture Engine v0.1.0 (dev-rs)");

@@ -52,49 +52,6 @@ impl Default for SolverConfig {
     }
 }
 
-/// Container for detected 2D body keypoints.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct BodyKeypoints {
-    pub points: Vec<Point>,
-}
-
-impl BodyKeypoints {
-    #[inline]
-    pub fn new(points: Vec<Point>) -> Self {
-        Self { points }
-    }
-}
-
-impl std::ops::Deref for BodyKeypoints {
-    type Target = [Point];
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        &self.points
-    }
-}
-
-impl std::ops::DerefMut for BodyKeypoints {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.points
-    }
-}
-
-impl From<Vec<Point>> for BodyKeypoints {
-    #[inline]
-    fn from(points: Vec<Point>) -> Self {
-        Self::new(points)
-    }
-}
-
-impl From<&[Point]> for BodyKeypoints {
-    #[inline]
-    fn from(slice: &[Point]) -> Self {
-        Self::new(slice.to_vec())
-    }
-}
-
 /// Biomechanical body kinematic constraint solver.
 /// Learns stable segment lengths over time using exponential moving average (EMA)
 /// and projects detected joints along limb vectors to prevent stretching.
@@ -123,13 +80,8 @@ impl BodyIKSolver {
         &self.target_lengths
     }
 
-    /// Enforces anatomical limb lengths on a mutable BodyKeypoints set.
-    pub fn enforce_limb_lengths(&mut self, body: &mut BodyKeypoints) {
-        self.enforce_limb_lengths_points(&mut body.points);
-    }
-
     /// Enforces anatomical limb lengths on a mutable slice of 2D `Point` landmarks.
-    pub fn enforce_limb_lengths_points(&mut self, points: &mut [Point]) {
+    pub fn enforce_limb_lengths(&mut self, points: &mut [Point]) {
         if !self.config.body_constraints_enabled || points.len() < 17 {
             return;
         }
@@ -301,7 +253,7 @@ mod tests {
         let config = SolverConfig::default();
         let mut solver = BodyIKSolver::new(&config);
 
-        let mut body = BodyKeypoints::new(dummy_body_points());
+        let mut body = dummy_body_points();
         solver.enforce_limb_lengths(&mut body);
 
         // Verify initial lengths cached correctly
@@ -317,11 +269,11 @@ mod tests {
         config.body_length_correction = 1.0; // 100% force back to target length
         let mut solver = BodyIKSolver::new(&config);
 
-        let mut body1 = BodyKeypoints::new(dummy_body_points());
+        let mut body1 = dummy_body_points();
         solver.enforce_limb_lengths(&mut body1);
 
         // Next frame, detector glitches and left elbow (index 7) stretches to len = 100
-        let mut body2 = BodyKeypoints::new(dummy_body_points());
+        let mut body2 = dummy_body_points();
         body2[7] = Point::new(100, 200, 0.9); // dist(5, 7) was 50, now 100
         solver.enforce_limb_lengths(&mut body2);
 
@@ -336,7 +288,7 @@ mod tests {
         let config = SolverConfig::default();
         let mut solver = BodyIKSolver::new(&config);
 
-        let mut body = BodyKeypoints::new(dummy_body_points());
+        let mut body = dummy_body_points();
         body[7].confidence = 0.1; // below 0.30 threshold
 
         solver.enforce_limb_lengths(&mut body);

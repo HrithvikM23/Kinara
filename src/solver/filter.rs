@@ -72,19 +72,9 @@ fn alpha(dt: f32, cutoff: f32) -> f32 {
 }
 
 /// Spherical linear interpolation filter for unit rotation quaternions on S^3.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct QuaternionFilter;
-
-impl QuaternionFilter {
-    pub fn new() -> Self {
-        Self
-    }
-
-    /// Performs spherical linear interpolation (Slerp) along the shortest arc on S^3.
-    #[inline]
-    pub fn slerp(&self, q0: Quat, q1: Quat, alpha: f32) -> Quat {
-        q0.slerp(q1, alpha.clamp(0.0, 1.0))
-    }
+#[inline]
+pub fn quaternion_slerp(q0: Quat, q1: Quat, alpha: f32) -> Quat {
+    q0.slerp(q1, alpha.clamp(0.0, 1.0))
 }
 
 #[cfg(test)]
@@ -117,20 +107,19 @@ mod tests {
 
     #[test]
     fn test_quaternion_slerp() {
-        let filter = QuaternionFilter::new();
         let q_identity = Quat::IDENTITY;
         let q_rot_y_90 = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
 
         // Test alpha = 0.0 returns starting quaternion
-        let at_zero = filter.slerp(q_identity, q_rot_y_90, 0.0);
+        let at_zero = quaternion_slerp(q_identity, q_rot_y_90, 0.0);
         assert!((at_zero.dot(q_identity).abs() - 1.0).abs() < 1e-5);
 
         // Test alpha = 1.0 returns target quaternion
-        let at_one = filter.slerp(q_identity, q_rot_y_90, 1.0);
+        let at_one = quaternion_slerp(q_identity, q_rot_y_90, 1.0);
         assert!((at_one.dot(q_rot_y_90).abs() - 1.0).abs() < 1e-5);
 
         // Test alpha = 0.5 produces 45 degree rotation
-        let at_half = filter.slerp(q_identity, q_rot_y_90, 0.5);
+        let at_half = quaternion_slerp(q_identity, q_rot_y_90, 0.5);
         let expected_half = Quat::from_rotation_y(std::f32::consts::FRAC_PI_4);
         assert!((at_half.dot(expected_half).abs() - 1.0).abs() < 1e-4);
     }
