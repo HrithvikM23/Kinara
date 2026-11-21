@@ -220,7 +220,6 @@ pub fn run_cli_pipeline(config: PipelineConfig) -> anyhow::Result<()> {
 
     // 3. Apply FootLockStabilizer in grounded Blender space (+Z up, ground at Z=0.0)
     if config.foot_lock_enabled {
-        let mut foot_stabilizer = FootLockStabilizer::new(8.0, 16.0);
         for frame in motion_frames.iter_mut() {
             let left_ankle = frame.joints.get("LeftAnkle").map(|j| glam::Vec3::new(j.x, j.y, j.z)).unwrap_or(glam::Vec3::ZERO);
             let right_ankle = frame.joints.get("RightAnkle").map(|j| glam::Vec3::new(j.x, j.y, j.z)).unwrap_or(glam::Vec3::ZERO);
@@ -228,7 +227,7 @@ pub fn run_cli_pipeline(config: PipelineConfig) -> anyhow::Result<()> {
             let right_toe = frame.joints.get("RightToeBase").map(|j| glam::Vec3::new(j.x, j.y, j.z)).unwrap_or(glam::Vec3::ZERO);
 
             let mut contacts = FootContacts::new(left_ankle, right_ankle, left_toe, right_toe);
-            foot_stabilizer.lock_planted_feet(&mut contacts, dt);
+            session.foot_stabilizer.lock_planted_feet(&mut contacts, dt);
 
             if let Some(la) = frame.joints.get_mut("LeftAnkle") {
                 la.x = contacts.left_ankle.x;
@@ -255,7 +254,10 @@ pub fn run_cli_pipeline(config: PipelineConfig) -> anyhow::Result<()> {
 
     let out_path = Path::new(&config.output_path);
     if out_path.extension().and_then(|s| s.to_str()) == Some("json") {
-        let meta = ClipMetadata::default();
+        let mut meta = ClipMetadata::default();
+        meta.fps = config.fps;
+        meta.frame_count = motion_frames.len();
+        meta.source_file = Some(config.input_source.clone());
         export_motion_json(out_path, &motion_frames, &meta)?;
     } else {
         export_motion_fbx(out_path, &motion_frames, config.fps)?;
@@ -312,6 +314,8 @@ fn main() -> anyhow::Result<()> {
                 let mf = session.process_frame(&frame, frame_idx, dt)?;
                 let mut seq = vec![mf];
                 convert_sequence_to_blender_space(&mut seq);
+                normalize_sequence_scale(&mut seq, 50.0);
+                align_to_ground_plane(&mut seq);
                 let mut blended_mf = seq.pop().unwrap();
 
                 if config.foot_lock_enabled {

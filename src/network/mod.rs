@@ -145,7 +145,12 @@ impl BlenderStreamServer {
         for spec in &SKELETON {
             let j_pos = frame.joints.get(spec.name).map(|j| Vec3::new(j.x, j.y, j.z)).unwrap_or(Vec3::ZERO);
 
-            let child_name = SKELETON.iter().find(|s| s.parent == Some(spec.name)).map(|s| s.name);
+            let child_name = match spec.name {
+                "HipsRoot" => Some("Chest"),
+                "LeftWrist" => Some("LeftMiddle1"),
+                "RightWrist" => Some("RightMiddle1"),
+                _ => SKELETON.iter().find(|s| s.parent == Some(spec.name)).map(|s| s.name),
+            };
             let dir_vec = if let Some(c_name) = child_name {
                 frame.joints.get(c_name).map(|c| Vec3::new(c.x, c.y, c.z) - j_pos)
             } else if let Some(p_name) = spec.parent {

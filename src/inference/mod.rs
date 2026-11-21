@@ -87,7 +87,18 @@ pub fn letterbox_image(
     (tensor_data, transform)
 }
 
-/// Decodes 1D SimCC horizontal and vertical representations into 2D keypoints with Gaussian peak refinement.
+/// Maps either raw logits or pre-computed probabilities into valid [0.0, 1.0] confidence score.
+#[inline]
+fn logit_to_prob(val: f32) -> f32 {
+    if (0.0..=1.0).contains(&val) {
+        val
+    } else {
+        1.0 / (1.0 + (-val).exp())
+    }
+}
+
+/// Decodes 1D SimCC horizontal and vertical representations into 2D keypoints
+/// using Gaussian/parabolic sub-pixel peak refinement. Works directly on raw model logits or probabilities.
 pub fn decode_simcc_keypoints(
     simcc_x: &[f32],
     simcc_y: &[f32],
@@ -122,14 +133,14 @@ pub fn decode_simcc_keypoints(
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
             .unwrap_or((0, &0.0));
 
-        // Sub-pixel Gaussian interpolation on horizontal axis
+        // Sub-pixel parabolic peak refinement on horizontal axis: (right - left) / (2 * (2*center - left - right))
         let dx = if best_x_idx > 0 && best_x_idx + 1 < x_bins {
-            let left = x_slice[best_x_idx - 1].max(1e-6).ln();
-            let center = max_val_x.max(1e-6).ln();
-            let right = x_slice[best_x_idx + 1].max(1e-6).ln();
+            let left = x_slice[best_x_idx - 1];
+            let center = max_val_x;
+            let right = x_slice[best_x_idx + 1];
             let denom = 2.0 * (2.0 * center - left - right);
             if denom.abs() > 1e-5 {
-                ((left - right) / denom).clamp(-1.0, 1.0)
+                ((right - left) / denom).clamp(-1.0, 1.0)
             } else {
                 0.0
             }
@@ -137,14 +148,14 @@ pub fn decode_simcc_keypoints(
             0.0
         };
 
-        // Sub-pixel Gaussian interpolation on vertical axis
+        // Sub-pixel parabolic peak refinement on vertical axis
         let dy = if best_y_idx > 0 && best_y_idx + 1 < y_bins {
-            let left = y_slice[best_y_idx - 1].max(1e-6).ln();
-            let center = max_val_y.max(1e-6).ln();
-            let right = y_slice[best_y_idx + 1].max(1e-6).ln();
+            let left = y_slice[best_y_idx - 1];
+            let center = max_val_y;
+            let right = y_slice[best_y_idx + 1];
             let denom = 2.0 * (2.0 * center - left - right);
             if denom.abs() > 1e-5 {
-                ((left - right) / denom).clamp(-1.0, 1.0)
+                ((right - left) / denom).clamp(-1.0, 1.0)
             } else {
                 0.0
             }
@@ -156,7 +167,9 @@ pub fn decode_simcc_keypoints(
         let refined_y = (best_y_idx as f32 + dy) / simcc_split_ratio.max(1.0);
 
         let (orig_x, orig_y) = transform.unletterbox(refined_x, refined_y);
-        let confidence = (max_val_x.min(max_val_y)).clamp(0.0, 1.0);
+        let conf_x = logit_to_prob(max_val_x);
+        let conf_y = logit_to_prob(max_val_y);
+        let confidence = conf_x.min(conf_y).clamp(0.0, 1.0);
         points.push(Point::new(orig_x.round() as i32, orig_y.round() as i32, confidence));
     }
 
@@ -336,10 +349,11 @@ pub fn generate_fallback_hand(wrist: Vec2, dir: Vec2, len: f32) -> HandKeypoints
 
 use std::sync::{Arc, Mutex};
 
-/// Initializes an ONNX Runtime session, falling back gracefully to CPU if hardware acceleration is unavailable.
+/// Initializes an ONNX Runtime session, configuring CUDA or DirectML providers if enabled,
+/// and falling back gracefully to CPU if hardware acceleration is unavailable.
 fn init_ort_session(
     path: &Path,
-    _backend: ExecutionBackend,
+    backend: ExecutionBackend,
 ) -> anyhow::Result<Option<Arc<Mutex<ort::session::Session>>>> {
     if !path.exists() {
         return Ok(None);
@@ -353,11 +367,64 @@ fn init_ort_session(
     let mut builder = ort::session::Session::builder(&env)
         .context("Failed to create ONNX session builder")?;
 
+    match backend {
+        ExecutionBackend::Cuda => {
+            #[cfg(feature = "cuda")]
+            {
+                builder = builder
+                    .with_execution_providers([ort::ep::CUDA::default().build()])
+                    .unwrap_or(builder);
+            }
+            #[cfg(not(feature = "cuda"))]
+            {
+                eprintln!("Warning: CUDA execution backend requested, but 'cuda' feature flag is not enabled in Cargo.toml. Falling back to CPU.");
+            }
+        }
+        ExecutionBackend::DirectMl => {
+            #[cfg(feature = "directml")]
+            {
+                builder = builder
+                    .with_execution_providers([ort::ep::DirectML::default().build()])
+                    .unwrap_or(builder);
+            }
+            #[cfg(not(feature = "directml"))]
+            {
+                eprintln!("Warning: DirectML execution backend requested, but 'directml' feature flag is not enabled in Cargo.toml. Falling back to CPU.");
+            }
+        }
+        ExecutionBackend::Cpu => {}
+    }
+
     let session = builder
         .commit_from_file(path)
         .with_context(|| format!("Failed to load ONNX model from {:?}", path))?;
 
     Ok(Some(Arc::new(Mutex::new(session))))
+}
+
+/// Dynamically probes the input spatial dimensions [width, height] from an ONNX model session,
+/// falling back to (256, 256) if inputs are absent or dynamic (-1).
+fn probe_model_input_dimensions(session: &Option<Arc<Mutex<ort::session::Session>>>) -> (u32, u32) {
+    let mut input_w = 256;
+    let mut input_h = 256;
+    if let Some(ref s_arc) = session {
+        if let Ok(s) = s_arc.lock() {
+            if let Some(input) = s.inputs().first() {
+                if let ort::value::ValueType::Tensor { shape, .. } = input.dtype() {
+                    let dims = shape.as_ref();
+                    if dims.len() == 4 {
+                        if dims[2] > 0 {
+                            input_h = dims[2] as u32;
+                        }
+                        if dims[3] > 0 {
+                            input_w = dims[3] as u32;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    (input_w, input_h)
 }
 
 /// Full-body neural pose estimator runner.
@@ -373,11 +440,12 @@ pub struct BodyPoseEstimator {
 impl BodyPoseEstimator {
     pub fn new(path: &Path, backend: ExecutionBackend) -> anyhow::Result<Self> {
         let session = init_ort_session(path, backend)?;
+        let (input_w, input_h) = probe_model_input_dimensions(&session);
         Ok(Self {
             model_path: path.to_path_buf(),
             backend,
-            input_w: 256,
-            input_h: 256,
+            input_w,
+            input_h,
             session,
         })
     }
@@ -457,11 +525,12 @@ pub struct HandMeshEstimator {
 impl HandMeshEstimator {
     pub fn new(path: &Path, backend: ExecutionBackend) -> anyhow::Result<Self> {
         let session = init_ort_session(path, backend)?;
+        let (input_w, input_h) = probe_model_input_dimensions(&session);
         Ok(Self {
             model_path: path.to_path_buf(),
             backend,
-            input_w: 256,
-            input_h: 256,
+            input_w,
+            input_h,
             session,
         })
     }
@@ -568,6 +637,33 @@ mod tests {
         assert_eq!(pts[0].x, 25); // 50 / 2.0 = 25
         assert_eq!(pts[0].y, 30); // 60 / 2.0 = 30
         assert!(pts[0].confidence > 0.9);
+    }
+
+    #[test]
+    fn test_decode_simcc_keypoints_raw_negative_logits() {
+        // Test with raw negative logits (typical of un-normalized RTMPose outputs)
+        let mut simcc_x = vec![-5.0f32; 100];
+        let mut simcc_y = vec![-8.0f32; 100];
+        simcc_x[49] = -1.0;
+        simcc_x[50] = 3.5; // peak
+        simcc_x[51] = 1.0; // right neighbor higher than left -> peak shifts right
+        simcc_y[60] = 4.2;
+
+        let transform = LetterboxTransform {
+            scale: 1.0,
+            pad_x: 0.0,
+            pad_y: 0.0,
+            orig_w: 100,
+            orig_h: 100,
+            target_w: 100,
+            target_h: 100,
+        };
+
+        let pts = decode_simcc_keypoints(&simcc_x, &simcc_y, 1, 2.0, &transform);
+        assert_eq!(pts.len(), 1);
+        assert!(pts[0].x >= 25);
+        assert_eq!(pts[0].y, 30);
+        assert!(pts[0].confidence > 0.95);
     }
 
     #[test]

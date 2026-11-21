@@ -208,6 +208,8 @@ impl VideoInputSource {
                         }
                     }
                 }
+                let _ = child.kill();
+                let _ = child.wait();
             });
 
             // Probe first frame to detect stream dimensions

@@ -15,6 +15,11 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 ort = "2.0.0-rc.15"
 ffmpeg-sidecar = "2.7.0"
 
+[features]
+default = []
+cuda = ["ort/cuda"]
+directml = ["ort/directml"]
+
 [lib]
 name = "kinara"
 path = "src/lib.rs"
