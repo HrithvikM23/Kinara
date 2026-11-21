@@ -8,47 +8,47 @@ This document tracks the systematic porting of Kinara from Python to native Rust
 
 | Subsystem | Module Path | Total Functions | Completed | Status |
 | :--- | :--- | :---: | :---: | :--- |
-| **1. Video Ingestion & IO** | `src/video/` | 6 | 0 | 🟡 Pending Start |
-| **2. Inference Engine (ONNX)** | `src/inference/` | 8 | 2 | 🔵 In Progress |
+| **1. Video Ingestion & IO** | `src/video/` | 6 | 6 | 🟢 Completed |
+| **2. Inference Engine (ONNX)** | `src/inference/` | 8 | 8 | 🟢 Completed |
 | **3. Biomechanical IK Solver** | `src/solver/` | 9 | 9 | 🟢 Completed |
 | **4. Temporal Smoothing & Filter**| `src/solver/` | 5 | 5 | 🟢 Completed |
 | **5. Multi-Person Tracking** | `src/tracking/` | 7 | 7 | 🟢 Completed |
 | **6. Multi-Camera Triangulation**| `src/fusion/` | 5 | 5 | 🟢 Completed |
 | **7. Coordinate & Scale Normalizer**| `src/export/` | 5 | 5 | 🟢 Completed |
 | **8. Export Engine (JSON / FBX)**| `src/export/` | 5 | 5 | 🟢 Completed |
-| **9. Configuration, GUI & Timeline Editor**| `src/` | 10 | 4 | 🔵 In Progress |
-| **Total** | | **60** | **42** | **70.0% Completed** |
+| **9. Configuration, GUI & Timeline Editor**| `src/` | 10 | 10 | 🟢 Completed |
+| **Total** | | **60** | **60** | **100.0% Completed** |
 
 ---
 
 ## 1. Video Ingestion & IO (`src/video/`)
 
-- [ ] `VideoInputSource::open(path_or_dev: &str, fps: Option<f64>) -> Result<Self>`
+- [x] `VideoInputSource::open(path_or_dev: &str, fps: Option<f64>) -> Result<Self>`
   - *Ref*: `camera/capture.py:VideoInputSource.__init__`
   - *Description*: Opens camera device or video file using hardware decoders (DirectShow / V4L2); validates FPS and dimensions.
   - *Signature*: `pub fn open(src: &str, fps: Option<f64>) -> anyhow::Result<Self>`
 
-- [ ] `VideoInputSource::read_frame(&mut self) -> Result<Option<RgbImage>>`
+- [x] `VideoInputSource::read_frame(&mut self) -> Result<Option<RgbImage>>`
   - *Ref*: `camera/capture.py:VideoInputSource.read`
   - *Description*: Decodes next frame into contiguous raw sRGB pixel buffer; reuses heap buffers across iterations.
   - *Signature*: `pub fn read_frame(&mut self) -> anyhow::Result<Option<image::RgbImage>>`
 
-- [ ] `VideoInputSource::seek_frame(&mut self, frame_index: usize) -> Result<()>`
+- [x] `VideoInputSource::seek_frame(&mut self, frame_index: usize) -> Result<()>`
   - *Ref*: `camera/capture.py`
   - *Description*: Seeks to a specific frame timestamp for parallel chunk decoding.
   - *Signature*: `pub fn seek_frame(&mut self, index: usize) -> anyhow::Result<()>`
 
-- [ ] `VideoOutputWriter::new(path: &Path, w: u32, h: u32, fps: f64) -> Result<Self>`
+- [x] `VideoOutputWriter::new(path: &Path, w: u32, h: u32, fps: f64) -> Result<Self>`
   - *Ref*: `camera/capture.py:VideoOutputWriter.__init__`
   - *Description*: Initializes H.264/NVENC video encoder stream for MP4 output.
   - *Signature*: `pub fn new(path: &Path, w: u32, h: u32, fps: f64) -> anyhow::Result<Self>`
 
-- [ ] `VideoOutputWriter::write_frame(&mut self, frame: &RgbImage) -> Result<()>`
+- [x] `VideoOutputWriter::write_frame(&mut self, frame: &RgbImage) -> Result<()>`
   - *Ref*: `camera/capture.py:VideoOutputWriter.write`
   - *Description*: Encodes and appends one annotated video frame to destination MP4.
   - *Signature*: `pub fn write_frame(&mut self, frame: &image::RgbImage) -> anyhow::Result<()>`
 
-- [ ] `VideoOutputWriter::finish(self) -> Result<()>`
+- [x] `VideoOutputWriter::finish(self) -> Result<()>`
   - *Ref*: `camera/capture.py:VideoOutputWriter.close`
   - *Description*: Flushes remaining packets and writes MP4 file trailer.
   - *Signature*: `pub fn finish(self) -> anyhow::Result<()>`
@@ -57,32 +57,32 @@ This document tracks the systematic porting of Kinara from Python to native Rust
 
 ## 2. Pose & Hand Inference Engine (`src/inference/`)
 
-- [ ] `BodyPoseEstimator::new(model_path: &Path, backend: Backend) -> Result<Self>`
+- [x] `BodyPoseEstimator::new(model_path: &Path, backend: Backend) -> Result<Self>`
   - *Ref*: `inference/rtmpose.py:ONNXPoseHandRunner._init_rtmpose_body`
   - *Description*: Instantiates ONNX Runtime session (`ort`) with CUDA / DirectML provider and performs warmup.
   - *Signature*: `pub fn new(path: &Path, backend: ExecutionBackend) -> anyhow::Result<Self>`
 
-- [ ] `BodyPoseEstimator::detect_body(&mut self, frame: &RgbImage) -> Result<BodyKeypointSet>`
+- [x] `BodyPoseEstimator::detect_body(&mut self, frame: &RgbImage) -> Result<BodyKeypointSet>`
   - *Ref*: `inference/rtmpose.py:ONNXPoseHandRunner.detect_body`
   - *Description*: Runs full-body pose inference on downscaled proxy; decodes heatmaps into 17 COCO keypoints.
   - *Signature*: `pub fn detect_body(&mut self, frame: &image::RgbImage) -> anyhow::Result<BodyKeypoints>`
 
-- [ ] `compute_forearm_vector(elbow: Vec2, wrist: Vec2) -> (Vec2, f32)`
+- [x] `compute_forearm_vector(elbow: Vec2, wrist: Vec2) -> (Vec2, f32)`
   - *Ref*: `utils/normalize.py:build_hand_box`
   - *Description*: Calculates normalized direction vector and Euclidean segment length between elbow and wrist.
   - *Signature*: `pub fn compute_forearm_vector(elbow: glam::Vec2, wrist: glam::Vec2) -> (glam::Vec2, f32)`
 
-- [ ] `extract_hand_crop(frame: &RgbImage, wrist: Vec2, dir: Vec2, len: f32) -> Option<HandCrop>`
+- [x] `extract_hand_crop(frame: &RgbImage, wrist: Vec2, dir: Vec2, len: f32) -> Option<HandCrop>`
   - *Ref*: `utils/normalize.py:build_hand_box`
   - *Description*: Extracts native-resolution square pixel crop aligned along forearm vector with padding.
   - *Signature*: `pub fn extract_hand_crop(frame: &image::RgbImage, wrist: glam::Vec2, dir: glam::Vec2, len: f32) -> Option<HandCrop>`
 
-- [ ] `HandMeshEstimator::new(model_path: &Path, backend: Backend) -> Result<Self>`
+- [x] `HandMeshEstimator::new(model_path: &Path, backend: Backend) -> Result<Self>`
   - *Ref*: `inference/rtmpose.py:ONNXPoseHandRunner._init_onnx_hand`
   - *Description*: Loads 3D hand mesh recovery / landmark ONNX model with hardware acceleration.
   - *Signature*: `pub fn new(path: &Path, backend: ExecutionBackend) -> anyhow::Result<Self>`
 
-- [ ] `HandMeshEstimator::detect_hand(&mut self, crop: &HandCrop) -> Result<HandKeypointSet>`
+- [x] `HandMeshEstimator::detect_hand(&mut self, crop: &HandCrop) -> Result<HandKeypointSet>`
   - *Ref*: `inference/rtmpose.py:ONNXPoseHandRunner.detect_hand`
   - *Description*: Infers 21 3D hand landmarks; projects crop coordinates back to full-frame image space.
   - *Signature*: `pub fn detect_hand(&mut self, crop: &HandCrop) -> anyhow::Result<HandKeypoints>`
@@ -305,32 +305,32 @@ This document tracks the systematic porting of Kinara from Python to native Rust
 
 ## 9. Configuration, Desktop GUI & Timeline Editor (`src/`)
 
-- [ ] `PipelineConfig::load_or_default(path: &Path) -> Self`
+- [x] `PipelineConfig::load_or_default(path: &Path) -> Self`
   - *Ref*: `core/config.py:PipelineConfig`
   - *Description*: Loads settings from `kinara.config.json` with fallback to high-performance defaults.
   - *Signature*: `pub fn load_or_default(path: &Path) -> Self`
 
-- [ ] `PipelineConfig::save(&self, path: &Path) -> Result<()>`
+- [x] `PipelineConfig::save(&self, path: &Path) -> Result<()>`
   - *Ref*: `core/config.py:PipelineConfig`
   - *Description*: Persists active configuration, video paths, and UI preferences to disk.
   - *Signature*: `pub fn save(&self, path: &Path) -> anyhow::Result<()>`
 
-- [ ] `parse_cli_arguments() -> CliArgs`
+- [x] `parse_cli_arguments() -> CliArgs`
   - *Ref*: `core/cli.py:build_parser`
   - *Description*: Parses command line arguments via `clap` (derive macro), overriding config file values.
   - *Signature*: `pub fn parse_cli_arguments() -> CliArgs`
 
-- [ ] `KinaraApp::new(cc: &eframe::CreationContext, config: PipelineConfig) -> Self`
+- [x] `KinaraApp::new(cc: &eframe::CreationContext, config: PipelineConfig) -> Self`
   - *Ref*: `app/gui.rs`
   - *Description*: Initializes native desktop GUI application with egui themes and texture allocators.
-  - *Signature*: `pub fn new(cc: &eframe::CreationContext, cfg: PipelineConfig) -> Self`
+  - *Signature*: `pub fn new(cc: &CreationContext, cfg: PipelineConfig) -> Self`
 
-- [ ] `KinaraApp::update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame)`
+- [x] `KinaraApp::update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame)`
   - *Ref*: `app/gui.rs`
   - *Description*: Renders desktop studio deck: video file picker, camera selection, live preview, and progress bar.
-  - *Signature*: `impl eframe::App for KinaraApp { fn update(...) }`
+  - *Signature*: `pub fn update(&mut self, ctx: &GuiContext, frame: &mut GuiFrame)`
 
-- [ ] `run_cli_pipeline(config: PipelineConfig) -> Result<()>`
+- [x] `run_cli_pipeline(config: PipelineConfig) -> Result<()>`
   - *Ref*: `app/main.py:main`
   - *Description*: Headless batch runner executing the full mocap pipeline without graphical desktop dependencies.
   - *Signature*: `pub fn run_cli_pipeline(cfg: PipelineConfig) -> anyhow::Result<()>`

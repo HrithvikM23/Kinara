@@ -192,7 +192,7 @@ This document provides a comprehensive technical index of all functions within t
 * **Responsibility**: Generates a self-contained ASCII FBX 7.4 file containing an armature hierarchy and baked translation/rotation curves.
 * **Inputs**: Destination FBX path, motion frames, skeleton spec, framerate.
 * **Outputs**: Atomic unit `Result<()>`.
-* **Internal Logic**: Emits FBX 7400 header; creates `Model::LimbNode` objects for all 78 joints; binds parent-child relations; writes time-sampled keyframe curves using FBX ticks ($46,186,158,000 \text{ ticks/sec}$).
+* **Internal Logic**: Emits FBX 7400 header; creates `Model::LimbNode` objects for all 60 joints; binds parent-child relations; writes time-sampled keyframe curves using FBX ticks ($46,186,158,000 \text{ ticks/sec}$).
 
 ---
 

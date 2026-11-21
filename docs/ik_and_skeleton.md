@@ -141,15 +141,15 @@ To interface seamlessly with Blender 4.x+ without requiring complex third-party 
                └───────────────┬───────────────┘
                                ▼
         ┌──────────────────────────────────────────────┐
-        │ 78-Joint Blender Armature with Baked Actions │
+        │ 60-Joint Blender Armature with Baked Actions │
         └──────────────────────────────────────────────┘
 ```
 
 ---
 
-### 1. The Canonical 78-Joint Hierarchy
+### 1. The Canonical 60-Joint Hierarchy
 
-Both export formats adhere to Kinara's standard **78-joint humanoid skeleton hierarchy**:
+Both export formats adhere to Kinara's standard **60-joint humanoid skeleton hierarchy**:
 
 ```
 HipsRoot (Root)

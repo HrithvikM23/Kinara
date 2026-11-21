@@ -8,7 +8,7 @@
 [![Language](https://img.shields.io/badge/Language-Rust_%7C_Python-dea584?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![GPU Acceleration](https://img.shields.io/badge/Inference-CUDA_%7C_DirectML_%7C_CPU-76b900?style=flat-square&logo=nvidia&logoColor=white)](https://developer.nvidia.com/cuda-zone)
 [![Blender Ready](https://img.shields.io/badge/DCC_Target-Blender_4.x+-f5792a?style=flat-square&logo=blender&logoColor=white)](https://www.blender.org)
-[![Rig Architecture](https://img.shields.io/badge/Skeleton-78--Joint_Armature-6366f1?style=flat-square)](./docs/ik_and_skeleton.md)
+[![Rig Architecture](https://img.shields.io/badge/Skeleton-60--Joint_Armature-6366f1?style=flat-square)](./docs/ik_and_skeleton.md)
 [![License](https://img.shields.io/badge/License-Non--Commercial-3b82f6?style=flat-square)](./LICENSE.md)
 
 <p align="center">
@@ -128,14 +128,14 @@ Kinara structures animation data into standard humanoid hierarchies for Blender,
 
 ```
 Kinara Motion Output
- ├── motion.json (kinara-motion-json-v1: 78-joint canonical hierarchy + rest offsets)
+ ├── motion.json (kinara-motion-json-v1: 60-joint canonical hierarchy + rest offsets)
  └── motion.fbx  (ASCII FBX 7.4: Hierarchical LimbNodes + baked translation curves)
 ```
 
 ### Option A: Direct FBX Import
 1. In Blender, navigate to `File` ▸ `Import` ▸ `FBX (.fbx)`.
 2. Select your exported `.fbx` file.
-3. The 78-joint armature imports with baked keyframe curves and feet grounded to the floor plane ($Z = 0.0$).
+3. The 60-joint armature imports with baked keyframe curves and feet grounded to the floor plane ($Z = 0.0$).
 
 ### Option B: Headless JSON Importer
 Execute the automated importer script to build armatures, attach constraint empties, and bake pose actions:
@@ -162,19 +162,28 @@ blender --background --python tools/import_kinara_motion.py -- --input outputs/m
 
 ```
 Kinara/
+ ├── Cargo.toml               # Native Rust package manifest (glam, ort, ffmpeg-sidecar, clap)
  ├── docs/
  │    ├── programflow.mmd      # High-fidelity Mermaid architecture diagram
- │    ├── functions.md        # Technical specification of all engine functions
- │    └── ik_and_skeleton.md  # Biomechanical IK theory & Blender export spec
+ │    ├── functions.md        # Technical specification of all 60 engine functions
+ │    └── ik_and_skeleton.md  # Biomechanical IK theory & 60-joint armature specification
+ ├── blender_addon/           # Real-time Blender viewport add-on
+ │    └── kinara_stream/      # Modular Blender 4.x package (stream, rig, ui, bake, constants)
  ├── assets/                  # Branding and visual assets
- ├── models/                  # ONNX / TensorRT model weights
- ├── outputs/                 # Exported motion JSON, FBX, and MP4 previews
  ├── src/
- │    ├── export/             # JSON, FBX, and Blender armature exporters
- │    ├── inference/          # Body pose and hand landmark inference
- │    ├── solver/             # Biomechanical IK constraints and temporal filtering
- │    └── video/              # Video ingestion and hardware-accelerated decoders
- ├── progress.md              # Systematic function-by-function Rust port ledger
+ │    ├── export/             # JSON, FBX 7.4 ASCII, and Blender space transformations
+ │    ├── fusion/             # Multi-camera DLT triangulation & ChArUco calibration
+ │    ├── inference/          # ONNX Runtime (ort) pose/hand estimation & SimCC/heatmap decoding
+ │    ├── network/            # Real-time TCP streaming server (port 49168)
+ │    ├── solver/             # Biomechanical IK constraints, One Euro filter & foot lock
+ │    ├── tracking/           # Multi-person tracking, IoU, and HSV torso profiling
+ │    ├── video/              # FFmpeg video decoding, webcam capture, and timeline editor
+ │    ├── config.rs           # Pipeline configuration & CLI argument serialization
+ │    ├── gui.rs              # Immediate-mode GUI application context & state management
+ │    ├── skeleton.rs         # 60-joint armature hierarchy, COCO-17 indices & Point geometry
+ │    ├── lib.rs              # Subsystem re-exports and API definitions
+ │    └── main.rs             # CLI binary entrypoint & pipeline execution runner
+ ├── progress.md              # 60-function implementation tracker (100% complete)
  └── README.md                # Project documentation
 ```
 
