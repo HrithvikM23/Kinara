@@ -17,7 +17,8 @@ This document tracks the systematic porting of Kinara from Python to native Rust
 | **7. Coordinate & Scale Normalizer**| `src/export/` | 5 | 5 | 🟢 Completed |
 | **8. Export Engine (JSON / FBX)**| `src/export/` | 5 | 5 | 🟢 Completed |
 | **9. Configuration, GUI & Timeline Editor**| `src/` | 10 | 10 | 🟢 Completed |
-| **Total** | | **60** | **60** | **100.0% Completed** |
+| **10. JIT Model Provisioning & Dual-Tier Vision**| `src/inference/` | 4 | 0 | 🟡 In Queue (Phase 2) |
+| **Total** | | **64** | **60** | **93.8% Completed (Core Complete)** |
 
 ---
 
@@ -354,3 +355,26 @@ This document tracks the systematic porting of Kinara from Python to native Rust
   - *Ref*: `src/video/timeline.rs`
   - *Description*: Merges contiguous video clips sharing the same source file into a single uninterrupted clip.
   - *Signature*: `pub fn merge_clips(&mut self, first_id: u64, second_id: u64) -> Result<(), &'static str>`
+
+---
+
+## 10. JIT Model Provisioning & Dual-Tier Vision Architecture (`src/inference/`)
+
+To keep the initial program distribution ultra-lightweight (~10MB binary without pre-bundled multi-gigabyte neural weights or extra Cargo dependencies), models are resolved **lazily just-in-time (JIT)**. When a user runs a CLI command or selects a model in the future GUI, Kinara checks if the specific model file exists in `models/`; only then does it download that specific model checkpoint via atomic streaming with a terminal/UI progress bar.
+
+- [ ] `ensure_model_available(model_type: ModelType, destination: &Path) -> Result<()>`
+  - *Description*: Checks if the requested model checkpoint exists on disk. If missing, streams only that specific model from verified HuggingFace CDN endpoints with a progress bar and atomic `.tmp` rename before runtime begins.
+  - *Signature*: `pub fn ensure_model_available(model_type: ModelType, destination: &Path) -> anyhow::Result<()>`
+
+- [ ] `ModelManager::get_checkpoint_status() -> HashMap<ModelType, CheckpointMetadata>`
+  - *Description*: Reports cached, partially downloaded, or missing weights across Tier 1 (Keypoint/IK) and Tier 2 (HMR) models.
+  - *Signature*: `pub fn get_checkpoint_status() -> HashMap<ModelType, CheckpointMetadata>`
+
+- [ ] `Tier 1: Fast 2D/3D Whole-Body Keypoints (RTMPose / DWPose)`
+  - *Description*: Lightweight (~80MB-150MB) real-time 133-point keypoint inference executed via native ONNX Runtime (`ort`) feeding the biomechanical IK solver.
+  - *Target*: 60-120+ FPS real-time tracking, live Blender streaming, gaming.
+
+- [ ] `Tier 2: High-Fidelity 3D Human Mesh Recovery (HMR / ExMR / SMPL-X Option)`
+  - *Description*: Optional high-fidelity 3D human mesh recovery predicting true 3D surface vertices and bone orientation matrices ($\mathbf{R} \in \text{SO}(3)$). Downloaded only if the user explicitly invokes `--vision-mode hmr` or selects HMR in the GUI.
+  - *Target*: Offline CGI, VFX, complex multi-person interaction.
+
