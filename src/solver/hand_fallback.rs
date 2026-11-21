@@ -5,7 +5,6 @@ use crate::skeleton::Point;
 use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 /// Normalized 2D hand landmark template offsets relative to the wrist (index 0).
 /// Coordinates are (lateral, forward) relative to forearm orientation.
@@ -33,7 +32,7 @@ pub const DEFAULT_HAND_TEMPLATE: [(f32, f32); 21] = [
     (0.62, 0.82),   // 20: Pinky Tip
 ];
 
-static HAND_REJECTION_COUNTS: Mutex<Option<HashMap<String, usize>>> = Mutex::new(None);
+static TELEMETRY: std::sync::Mutex<Option<HashMap<String, usize>>> = std::sync::Mutex::new(None);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum HandSide {
@@ -72,15 +71,6 @@ impl Default for HandValidationConfig {
             hand_default_scale: 0.72,
             hand_default_confidence: 0.45,
         }
-    }
-}
-
-fn normalize_vec2(v: (f32, f32)) -> (f32, f32) {
-    let len = v.0.hypot(v.1);
-    if len <= 1e-6 {
-        (0.0, -1.0)
-    } else {
-        (v.0 / len, v.1 / len)
     }
 }
 
@@ -194,18 +184,15 @@ pub fn is_hand_detection_valid(
 
 /// Logs a hand rejection reason to the internal telemetry counter.
 pub fn record_hand_rejection(reason: &str) {
-    let mut lock = HAND_REJECTION_COUNTS.lock().unwrap();
-    let counts = lock.get_or_insert_with(HashMap::new);
-    *counts.entry(reason.to_string()).or_insert(0) += 1;
+    let mut guard = TELEMETRY.lock().unwrap_or_else(|e| e.into_inner());
+    let map = guard.get_or_insert_with(HashMap::new);
+    *map.entry(reason.to_string()).or_insert(0) += 1;
 }
 
 /// Extracts and clears accumulated telemetry rejection counts.
 pub fn pop_hand_rejection_telemetry() -> HashMap<String, usize> {
-    let mut lock = HAND_REJECTION_COUNTS.lock().unwrap();
-    match lock.take() {
-        Some(m) => m,
-        None => HashMap::new(),
-    }
+    let mut guard = TELEMETRY.lock().unwrap_or_else(|e| e.into_inner());
+    guard.take().unwrap_or_default()
 }
 
 /// Determines whether a hand detection has enough confidence to warrant attempting IK constraints.
@@ -226,18 +213,16 @@ pub fn generate_default_hand(
     side: HandSide,
     config: &HandValidationConfig,
 ) -> Vec<Point> {
-    let wrist_x = wrist_point.x as f32;
-    let wrist_y = wrist_point.y as f32;
-    let elbow_x = elbow_point.x as f32;
-    let elbow_y = elbow_point.y as f32;
-
-    let forward_axis = normalize_vec2((wrist_x - elbow_x, wrist_y - elbow_y));
-    let mut lateral_axis = (-forward_axis.1, forward_axis.0);
+    let wrist = Vec2::new(wrist_point.x as f32, wrist_point.y as f32);
+    let elbow = Vec2::new(elbow_point.x as f32, elbow_point.y as f32);
+    let delta = wrist - elbow;
+    let forearm_len = delta.length();
+    let forward = if forearm_len > 1e-6 { delta / forearm_len } else { Vec2::new(0.0, -1.0) };
+    let mut lateral = Vec2::new(-forward.y, forward.x);
     if side == HandSide::Left {
-        lateral_axis = (-lateral_axis.0, -lateral_axis.1);
+        lateral = -lateral;
     }
 
-    let forearm_len = (wrist_x - elbow_x).hypot(wrist_y - elbow_y);
     let hand_scale = if forearm_len > 1e-3 {
         forearm_len * config.hand_default_scale
     } else {
@@ -247,10 +232,9 @@ pub fn generate_default_hand(
 
     DEFAULT_HAND_TEMPLATE
         .iter()
-        .map(|&(lateral, forward)| {
-            let px = wrist_x + lateral_axis.0 * lateral * hand_scale + forward_axis.0 * forward * hand_scale;
-            let py = wrist_y + lateral_axis.1 * lateral * hand_scale + forward_axis.1 * forward * hand_scale;
-            Point::new(px.round() as i32, py.round() as i32, confidence)
+        .map(|&(lat, fwd)| {
+            let p = wrist + lateral * (lat * hand_scale) + forward * (fwd * hand_scale);
+            Point::new(p.x.round() as i32, p.y.round() as i32, confidence)
         })
         .collect()
 }

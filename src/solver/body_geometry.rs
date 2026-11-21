@@ -7,40 +7,13 @@ use glam::Vec2;
 /// Extrapolates foot and toe base landmark points from knee-to-ankle direction and shin length.
 /// Applies a forward ground-plane bias and assigns minimum joint confidence.
 pub fn derive_foot_points(knee_point: Point, ankle_point: Point) -> (Point, Point) {
-    let dx = (ankle_point.x - knee_point.x) as f32;
-    let dy = (ankle_point.y - knee_point.y) as f32;
-    let mut shin_length = dx.hypot(dy);
-
-    let (unit_x, unit_y) = if !shin_length.is_finite() || shin_length <= 1e-6 {
-        shin_length = 24.0;
-        (0.0, 1.0)
-    } else {
-        (dx / shin_length, dy / shin_length)
-    };
-
-    // Blend lateral forward component so derived feet extend along ground plane
-    let mut foot_dir_x = unit_x * 0.85 + (if unit_x >= 0.0 { 1.0 } else { -1.0 }) * 0.15;
-    let mut foot_dir_y = (unit_y * 0.85).max(0.20);
-    let dir_len = foot_dir_x.hypot(foot_dir_y);
-    if dir_len > 1e-6 {
-        foot_dir_x /= dir_len;
-        foot_dir_y /= dir_len;
-    } else {
-        foot_dir_x = unit_x;
-        foot_dir_y = unit_y;
-    }
-
-    let foot_length = (shin_length * 0.35).max(12.0);
-    let toe_length = (shin_length * 0.25).max(10.0);
-    let foot_x = ankle_point.x as f32 + foot_dir_x * foot_length;
-    let foot_y = ankle_point.y as f32 + foot_dir_y * foot_length;
-    let toe_x = foot_x + foot_dir_x * toe_length;
-    let toe_y = foot_y + foot_dir_y * toe_length;
-    let confidence = knee_point.confidence.min(ankle_point.confidence);
-
+    let knee = Vec2::new(knee_point.x as f32, knee_point.y as f32);
+    let ankle = Vec2::new(ankle_point.x as f32, ankle_point.y as f32);
+    let (foot, toe) = derive_foot_vec2(knee, ankle);
+    let conf = knee_point.confidence.min(ankle_point.confidence);
     (
-        Point::new(foot_x.round() as i32, foot_y.round() as i32, confidence),
-        Point::new(toe_x.round() as i32, toe_y.round() as i32, confidence),
+        Point::new(foot.x.round() as i32, foot.y.round() as i32, conf),
+        Point::new(toe.x.round() as i32, toe.y.round() as i32, conf),
     )
 }
 

@@ -2,7 +2,7 @@
 //! Direct translation of `utils/triangulation.py`, `utils/calibration.py`, and `utils/fusion.py`.
 
 use crate::skeleton::{JointMap, JointValue, Point};
-use crate::export::writer::HandsPair;
+use crate::export::HandsPair;
 use glam::{Mat3, Mat4, Vec2, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

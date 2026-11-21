@@ -28,6 +28,19 @@ pub fn cv_to_blender_space(p: Vec3) -> Vec3 {
     Vec3::new(p.x, p.z, -p.y)
 }
 
+/// Converts an animation sequence from screen/OpenCV canonical coordinates (+X right, -Y up, Z depth)
+/// to Blender world coordinates (+X right, +Y forward/depth, +Z up).
+pub fn convert_sequence_to_blender_space(frames: &mut [MotionFrame]) {
+    for frame in frames.iter_mut() {
+        for joint in frame.joints.values_mut() {
+            let old_y = joint.y;
+            let old_z = joint.z;
+            joint.y = old_z;
+            joint.z = old_y;
+        }
+    }
+}
+
 /// Inverts Y coordinate from 2D screen/image space to 3D world space (+X right, +Y up, +Z depth).
 #[inline]
 pub fn screen_to_world_space(x: f32, y: f32, z: f32) -> Vec3 {

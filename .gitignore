@@ -107,4 +107,10 @@ agent.md
 # ----------------------
 *.cuda
 
+# ----------------------
+# Graphify knowledge graph
+# ----------------------
+graphify-out/
+
+
 

@@ -231,7 +231,8 @@ fn unproject_local(
 }
 
 /// Prevents finger crossing and mesh intersection by constraining lateral spread lanes.
-pub fn enforce_finger_lanes(points: &mut [Point]) {
+/// If `spread_scale` is provided (< 1.0), narrows lateral spread (e.g. during a fist).
+pub fn enforce_finger_lanes_scaled(points: &mut [Point], spread_scale: f32) {
     let wrist = point_xy(points[0]);
     let index_root = point_xy(points[5]);
     let pinky_root = point_xy(points[17]);
@@ -248,11 +249,14 @@ pub fn enforce_finger_lanes(points: &mut [Point]) {
     let rng_lat = project_local(wrist, point_xy(points[13]), lateral_axis, forward_axis).0;
     let pnk_lat = project_local(wrist, point_xy(points[17]), lateral_axis, forward_axis).0;
 
+    let scale = spread_scale.clamp(0.05, 1.0);
+    let scale_bound = |center: f32, bound: f32| center + (bound - center) * scale;
+
     let boundaries: [(&str, (f32, f32)); 4] = [
-        ("index", (idx_lat - (mid_lat - idx_lat).abs(), (idx_lat + mid_lat) * 0.5)),
-        ("middle", ((idx_lat + mid_lat) * 0.5, (mid_lat + rng_lat) * 0.5)),
-        ("ring", ((mid_lat + rng_lat) * 0.5, (rng_lat + pnk_lat) * 0.5)),
-        ("pinky", ((rng_lat + pnk_lat) * 0.5, pnk_lat + (pnk_lat - rng_lat).abs())),
+        ("index", (scale_bound(idx_lat, idx_lat - (mid_lat - idx_lat).abs()), scale_bound(idx_lat, (idx_lat + mid_lat) * 0.5))),
+        ("middle", (scale_bound(mid_lat, (idx_lat + mid_lat) * 0.5), scale_bound(mid_lat, (mid_lat + rng_lat) * 0.5))),
+        ("ring", (scale_bound(rng_lat, (mid_lat + rng_lat) * 0.5), scale_bound(rng_lat, (rng_lat + pnk_lat) * 0.5))),
+        ("pinky", (scale_bound(pnk_lat, (rng_lat + pnk_lat) * 0.5), scale_bound(pnk_lat, pnk_lat + (pnk_lat - rng_lat).abs()))),
     ];
 
     for (chain_name, chain_indices) in &FINGER_CHAINS {
@@ -270,6 +274,10 @@ pub fn enforce_finger_lanes(points: &mut [Point]) {
     }
 }
 
+pub fn enforce_finger_lanes(points: &mut [Point]) {
+    enforce_finger_lanes_scaled(points, 1.0);
+}
+
 fn max_point_movement(original: &[Point], constrained: &[Point]) -> f32 {
     original
         .iter()
@@ -282,8 +290,9 @@ fn max_point_movement(original: &[Point], constrained: &[Point]) -> f32 {
 /// 1. Radial limits
 /// 2. Bone length bounds
 /// 3. Hinge bend constraints
-/// 4. Finger lane separation
-/// 5. Secondary convergence pass if point movement > 2.0px.
+/// 4. DIP-PIP tendon coupling
+/// 5. Dynamic fist abduction clamp
+/// 6. Secondary convergence pass if point movement > 2.0px.
 pub fn enforce_hand_constraints(hand_points: &[Point]) -> Vec<Point> {
     if hand_points.len() != 21 {
         return hand_points.to_vec();
@@ -298,7 +307,22 @@ pub fn enforce_hand_constraints(hand_points: &[Point]) -> Vec<Point> {
     for (name, indices) in &FINGER_CHAINS {
         enforce_chain_bend(&mut constrained, name, indices);
     }
-    enforce_finger_lanes(&mut constrained);
+
+    // Apply DIP-PIP anatomical tendon coupling (theta_DIP = 0.67 * theta_PIP)
+    for (_name, indices) in &FINGER_CHAINS {
+        let mut chain = [
+            constrained[indices[0]],
+            constrained[indices[1]],
+            constrained[indices[2]],
+            constrained[indices[3]],
+            constrained[indices[4]],
+        ];
+        apply_dip_pip_tendon_coupling(&mut chain);
+        constrained[indices[4]] = chain[4];
+    }
+
+    // Apply dynamic fist abduction clamp
+    apply_dynamic_fist_abduction_clamp(&mut constrained);
 
     if max_point_movement(hand_points, &constrained) <= 2.0 {
         return constrained;
@@ -311,6 +335,7 @@ pub fn enforce_hand_constraints(hand_points: &[Point]) -> Vec<Point> {
     for (name, indices) in &FINGER_CHAINS {
         enforce_chain_bend(&mut constrained, name, indices);
     }
+    apply_dynamic_fist_abduction_clamp(&mut constrained);
 
     constrained
 }
@@ -339,7 +364,25 @@ pub fn apply_dynamic_fist_abduction_clamp(fingers: &mut [Point]) {
     if fingers.len() != 21 {
         return;
     }
-    enforce_finger_lanes(fingers);
+
+    // Compute average MCP flexion angle across all 4 finger chains
+    let mut total_mcp_flex_deg = 0.0f32;
+    let wrist = point_xy(fingers[0]);
+
+    for (_name, indices) in &FINGER_CHAINS {
+        let mcp = point_xy(fingers[indices[1]]);
+        let pip = point_xy(fingers[indices[2]]);
+
+        let v1 = normalize_vec((mcp.0 - wrist.0, mcp.1 - wrist.1));
+        let v2 = normalize_vec((pip.0 - mcp.0, pip.1 - mcp.1));
+        let dot = (v1.0 * v2.0 + v1.1 * v2.1).clamp(-1.0, 1.0);
+        total_mcp_flex_deg += dot.acos().to_degrees();
+    }
+
+    let avg_mcp_flex = total_mcp_flex_deg / 4.0;
+    // Scale lateral bounds down as MCP angle approaches 90 deg flexion
+    let scale = (1.0 - avg_mcp_flex / 90.0).clamp(0.05, 1.0);
+    enforce_finger_lanes_scaled(fingers, scale);
 }
 
 /// Clamps 3D planar hinge rotation (progress.md signature).

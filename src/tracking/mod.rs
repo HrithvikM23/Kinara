@@ -3,7 +3,7 @@
 
 use crate::skeleton::{BoundingBox, Point};
 use crate::solver::hand_fallback::generate_fallback_hand;
-use crate::export::writer::HandsPair;
+use crate::export::HandsPair;
 use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
@@ -240,63 +240,72 @@ pub fn resolve_cross_person_hand_ownership(tracks: &mut [PersonTrack]) {
     }
 
     for track_idx in 0..len {
-        let (wrist_idx, elbow_idx) = (9, 7); // Left hand
-        if tracks[track_idx].body_points.len() <= wrist_idx {
-            continue;
-        }
+        for (side, wrist_idx, elbow_idx) in [("left", 9, 7), ("right", 10, 8)] {
+            if tracks[track_idx].body_points.len() <= wrist_idx {
+                continue;
+            }
 
-        let owner_wrist = tracks[track_idx].body_points[wrist_idx];
-        let owner_elbow = tracks[track_idx].body_points[elbow_idx];
+            let owner_wrist = tracks[track_idx].body_points[wrist_idx];
+            let owner_elbow = tracks[track_idx].body_points[elbow_idx];
 
-        if owner_wrist.confidence <= 0.2 || owner_elbow.confidence <= 0.2 {
-            continue;
-        }
+            if owner_wrist.confidence <= 0.2 || owner_elbow.confidence <= 0.2 {
+                continue;
+            }
 
-        // If left hand is present, check ownership against other actors
-        if let Some(ref hand_pts) = tracks[track_idx].hands.left {
-            if !hand_pts.is_empty() {
-                let hand_wrist = hand_pts[0];
-                let owner_dist = ((hand_wrist.x - owner_wrist.x) as f32)
-                    .hypot((hand_wrist.y - owner_wrist.y) as f32);
+            let hand_opt = match side {
+                "left" => tracks[track_idx].hands.left.clone(),
+                _ => tracks[track_idx].hands.right.clone(),
+            };
 
-                let mut best_other_score = -1.0f32;
-                for other_idx in 0..len {
-                    if other_idx == track_idx || tracks[other_idx].body_points.len() <= wrist_idx {
-                        continue;
+            if let Some(ref hand_pts) = hand_opt {
+                if !hand_pts.is_empty() {
+                    let hand_wrist = hand_pts[0];
+                    let owner_dist = ((hand_wrist.x - owner_wrist.x) as f32)
+                        .hypot((hand_wrist.y - owner_wrist.y) as f32);
+
+                    let mut best_other_score = -1.0f32;
+                    for other_idx in 0..len {
+                        if other_idx == track_idx || tracks[other_idx].body_points.len() <= wrist_idx {
+                            continue;
+                        }
+                        let other_wrist = tracks[other_idx].body_points[wrist_idx];
+                        let other_dist = ((hand_wrist.x - other_wrist.x) as f32)
+                            .hypot((hand_wrist.y - other_wrist.y) as f32);
+                        let score = (owner_dist - other_dist) / owner_dist.max(1.0);
+                        if score > best_other_score {
+                            best_other_score = score;
+                        }
                     }
-                    let other_wrist = tracks[other_idx].body_points[wrist_idx];
-                    let other_dist = ((hand_wrist.x - other_wrist.x) as f32)
-                        .hypot((hand_wrist.y - other_wrist.y) as f32);
-                    let score = (owner_dist - other_dist) / owner_dist.max(1.0);
-                    if score > best_other_score {
-                        best_other_score = score;
+
+                    // Stolen hand detected: replace with synthetic fallback
+                    if best_other_score > 0.40 {
+                        let dir = Vec2::new(
+                            (owner_wrist.x - owner_elbow.x) as f32,
+                            (owner_wrist.y - owner_elbow.y) as f32,
+                        );
+                        let mut dir_len = dir.length();
+                        let unit_dir = if dir_len > 1e-4 {
+                            dir / dir_len
+                        } else {
+                            dir_len = 30.0;
+                            Vec2::new(0.0, 1.0)
+                        };
+
+                        let fallback = generate_fallback_hand(
+                            Vec2::new(owner_wrist.x as f32, owner_wrist.y as f32),
+                            unit_dir,
+                            dir_len,
+                        );
+                        let pts: Vec<Point> = fallback
+                            .iter()
+                            .map(|p| Point::new(p.x.round() as i32, p.y.round() as i32, 0.55))
+                            .collect();
+                        if side == "left" {
+                            tracks[track_idx].hands.left = Some(pts);
+                        } else {
+                            tracks[track_idx].hands.right = Some(pts);
+                        }
                     }
-                }
-
-                // Stolen hand detected: replace with synthetic fallback
-                if best_other_score > 0.40 {
-                    let dir = Vec2::new(
-                        (owner_wrist.x - owner_elbow.x) as f32,
-                        (owner_wrist.y - owner_elbow.y) as f32,
-                    );
-                    let mut dir_len = dir.length();
-                    let unit_dir = if dir_len > 1e-4 {
-                        dir / dir_len
-                    } else {
-                        dir_len = 30.0;
-                        Vec2::new(0.0, 1.0)
-                    };
-
-                    let fallback = generate_fallback_hand(
-                        Vec2::new(owner_wrist.x as f32, owner_wrist.y as f32),
-                        unit_dir,
-                        dir_len,
-                    );
-                    let pts: Vec<Point> = fallback
-                        .iter()
-                        .map(|p| Point::new(p.x.round() as i32, p.y.round() as i32, 0.55))
-                        .collect();
-                    tracks[track_idx].hands.left = Some(pts);
                 }
             }
         }

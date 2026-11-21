@@ -81,21 +81,9 @@ impl QuaternionFilter {
     }
 
     /// Performs spherical linear interpolation (Slerp) along the shortest arc on S^3.
-    ///
-    /// * `q0` - Starting rotation quaternion.
-    /// * `q1` - Target rotation quaternion.
-    /// * `alpha` - Interpolation factor in [0.0, 1.0].
+    #[inline]
     pub fn slerp(&self, q0: Quat, q1: Quat, alpha: f32) -> Quat {
-        let alpha = alpha.clamp(0.0, 1.0);
-        let q0 = q0.normalize();
-        let mut q1 = q1.normalize();
-
-        // Ensure shortest path on S^3 (flip q1 if dot product is negative)
-        if q0.dot(q1) < 0.0 {
-            q1 = -q1;
-        }
-
-        q0.slerp(q1, alpha).normalize()
+        q0.slerp(q1, alpha.clamp(0.0, 1.0))
     }
 }
 

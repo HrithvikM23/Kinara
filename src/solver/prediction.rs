@@ -75,11 +75,12 @@ pub fn predict_missing_landmarks(
     prev: &[Vec3],
     vel: &[Vec3],
     dt: f32,
-    _decay: f32,
+    decay: f32,
 ) -> Vec<Vec3> {
+    let decay_clamped = decay.clamp(0.0, 1.0);
     prev.iter()
         .zip(vel.iter())
-        .map(|(&p, &v)| p + v * dt)
+        .map(|(&p, &v)| p + (v * decay_clamped) * dt)
         .collect()
 }
 
