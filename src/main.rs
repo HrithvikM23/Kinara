@@ -310,7 +310,28 @@ fn main() -> anyhow::Result<()> {
 
             let mut frame_idx = 0;
             println!("Ready for Blender connections. Press Ctrl+C to stop.");
-            while let Some(frame) = video_in.read_frame()? {
+            loop {
+                let frame_opt = video_in.read_frame()?;
+                let frame = match frame_opt {
+                    Some(f) => f,
+                    None => {
+                        if video_in.total_frames > 0 {
+                            let _ = video_in.seek_frame(0);
+                            if let Some(f) = video_in.read_frame()? {
+                                f
+                            } else {
+                                let _ = streamer.accept_new_connections();
+                                std::thread::sleep(frame_duration);
+                                continue;
+                            }
+                        } else {
+                            let _ = streamer.accept_new_connections();
+                            std::thread::sleep(frame_duration);
+                            continue;
+                        }
+                    }
+                };
+
                 let mf = session.process_frame(&frame, frame_idx, dt)?;
                 let mut seq = vec![mf];
                 convert_sequence_to_blender_space(&mut seq);

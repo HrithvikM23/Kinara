@@ -46,7 +46,7 @@ class Receiver:
 
     def connect(self, port, context=None):
         self.close()
-        sock = socket.create_connection(('127.0.0.1', port), timeout=.15)
+        sock = socket.create_connection(('127.0.0.1', port), timeout=2.0)
         try:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             sock.setblocking(False)
